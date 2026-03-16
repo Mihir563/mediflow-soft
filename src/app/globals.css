@@ -127,3 +127,29 @@
     @apply font-sans;
   }
 }
+
+/* ── Prevent accidental text selection in desktop app ── */
+body, button, a, th, td, label, nav, aside, header {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Allow text selection inside inputs and textareas */
+input, textarea, [contenteditable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Prevent blue highlight on tap (mobile/webview) */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Table rows: no text cursor */
+tr, td, th { cursor: default; }
+
+/* Smooth scrollbars */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
