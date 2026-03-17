@@ -13,7 +13,7 @@ import GlobalSearch from '@/components/GlobalSearch';
 import {
   LayoutDashboard, Zap, FileText, ShoppingCart,
   Users, Package, BarChart3, Settings2, ChevronRight,
-  Activity
+  Activity, Keyboard, X
 } from 'lucide-react';
 
 type Page = 'dashboard' | 'pos' | 'sale' | 'purchase' | 'parties' | 'items' | 'reports' | 'settings';
@@ -25,15 +25,19 @@ const navItems: { page: Page; label: string; icon: any; shortcut: string; group?
   { page: 'purchase', label: 'Purchase Bill', icon: ShoppingCart, shortcut: 'Alt+3', group: 'Purchase' },
   { page: 'parties', label: 'Parties', icon: Users, shortcut: 'Alt+4', group: 'Books' },
   { page: 'items', label: 'Items', icon: Package, shortcut: 'Alt+5' },
-  { page: 'reports', label: 'Reports', icon: BarChart3, shortcut: 'Alt+6' },
+  { page: 'reports', label: 'Reports', icon: BarChart3, shortcut: 'Alt+6', group: 'Books' },
   { page: 'settings', label: 'Settings', icon: Settings2, shortcut: 'Alt+7', group: 'System' },
 ];
 
 export default function Home() {
   const [page, setPage] = useState<Page>('dashboard');
-  const [newSale, setNewSale] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  const navigate = useCallback((p: Page) => setPage(p), []);
+  const navigate = useCallback((p: Page, query?: string) => {
+    setPage(p);
+    if (query !== undefined) setSearchQuery(query);
+  }, []);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -54,11 +58,11 @@ export default function Home() {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans">
       {/* Sidebar */}
-      <aside className="w-56 flex-shrink-0 flex flex-col bg-slate-900 border-r border-slate-800">
+      <aside className="w-56 flex-shrink-0 flex flex-col bg-sidebar-bg border-r border-sidebar-border-color">
         {/* Logo */}
-        <div className="px-4 py-4 border-b border-slate-800">
+        <div className="px-4 py-4 border-b border-sidebar-border-color">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-brand flex items-center justify-center">
               <Activity size={16} className="text-white" />
             </div>
             <div>
@@ -85,7 +89,7 @@ export default function Home() {
                       onClick={() => navigate(item.page)}
                       className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all group relative ${
                         active
-                          ? 'bg-blue-600 text-white font-medium shadow-lg shadow-blue-900/30'
+                          ? 'bg-brand text-white font-medium shadow-lg shadow-blue-900/30'
                           : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                       }`}
                     >
@@ -103,9 +107,9 @@ export default function Home() {
         </nav>
 
         {/* Bottom store info */}
-        <div className="px-3 py-3 border-t border-slate-800">
+        <div className="px-3 py-3 border-t border-sidebar-border-color">
           <div className="flex items-center gap-2 px-2 py-2 rounded-lg bg-slate-800">
-            <div className="w-7 h-7 rounded-full bg-blue-600 flex-shrink-0 flex items-center justify-center text-white text-xs font-bold">R</div>
+            <div className="w-7 h-7 rounded-full bg-brand flex-shrink-0 flex items-center justify-center text-white text-xs font-bold">R</div>
             <div className="overflow-hidden">
               <p className="text-white text-xs font-medium truncate">Raghuveer Medical</p>
               <p className="text-slate-400 text-xs truncate">Provision Store</p>
@@ -129,14 +133,57 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-3">
             <GlobalSearch onNavigate={(p) => navigate(p as any)} />
-            <button onClick={() => navigate('sale')} className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors">
+            <button onClick={() => setShowShortcuts(true)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors">
+              <Keyboard size={14} /> Shortcuts
+            </button>
+            <button onClick={() => navigate('sale')} className="flex items-center gap-1.5 px-3 py-1.5 bg-success hover:bg-success-hover text-white rounded-lg text-sm font-medium transition-colors">
               <FileText size={14} /> + Sale
             </button>
-            <button onClick={() => navigate('purchase')} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
+            <button onClick={() => navigate('purchase')} className="flex items-center gap-1.5 px-3 py-1.5 bg-brand hover:bg-brand-hover text-white rounded-lg text-sm font-medium transition-colors">
               <ShoppingCart size={14} /> + Purchase
             </button>
           </div>
         </header>
+
+        {/* Shortcuts Modal */}
+        {showShortcuts && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={e => e.target === e.currentTarget && setShowShortcuts(false)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50">
+                <div className="flex items-center gap-2 text-slate-800">
+                  <Keyboard size={18} className="text-brand" />
+                  <h3 className="font-bold text-lg">Keyboard Shortcuts</h3>
+                </div>
+                <button onClick={() => setShowShortcuts(false)} className="w-8 h-8 rounded-lg hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors"><X size={16} /></button>
+              </div>
+              <div className="p-6">
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Global Navigation</h4>
+                    <ul className="space-y-2">
+                      <li className="flex justify-between text-sm"><span className="text-slate-600">Fast Billing</span><kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-600 font-mono text-[10px]">F2</kbd></li>
+                      <li className="flex justify-between text-sm"><span className="text-slate-600">Dashboard</span><kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-600 font-mono text-[10px]">Alt + 1</kbd></li>
+                      <li className="flex justify-between text-sm"><span className="text-slate-600">Sale/Purchase</span><kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-600 font-mono text-[10px]">Alt + 2/3</kbd></li>
+                      <li className="flex justify-between text-sm"><span className="text-slate-600">Global Search</span><kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-600 font-mono text-[10px]">Ctrl + K</kbd></li>
+                    </ul>
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Forms & Actions</h4>
+                    <ul className="space-y-2">
+                      <li className="flex justify-between text-sm"><span className="text-slate-600">Search/Add Item</span><kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-600 font-mono text-[10px]">F4</kbd></li>
+                      <li className="flex justify-between text-sm"><span className="text-slate-600">Save Invoice</span><kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-600 font-mono text-[10px]">Ctrl + S</kbd></li>
+                      <li className="flex justify-between text-sm"><span className="text-slate-600">Create New Entity</span><kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-600 font-mono text-[10px]">Ctrl + N</kbd></li>
+                      <li className="flex justify-between text-sm"><span className="text-slate-600">Cancel / Clear</span><kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-600 font-mono text-[10px]">Esc</kbd></li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 shadow-inner">
+                <button onClick={() => setShowShortcuts(false)} className="w-full h-10 bg-brand hover:bg-brand-hover text-white rounded-lg font-medium transition-colors">Got it</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Page Content */}
         <div className="flex-1 overflow-hidden">
@@ -144,9 +191,9 @@ export default function Home() {
           {page === 'pos' && <FastBilling />}
           {page === 'sale' && <SaleInvoice />}
           {page === 'purchase' && <PurchaseBill />}
-          {page === 'parties' && <Parties />}
-          {page === 'items' && <Items />}
-          {page === 'reports' && <Reports />}
+          {page === 'parties' && <Parties initialSearch={searchQuery} />}
+          {page === 'items' && <Items initialSearch={searchQuery} />}
+          {page === 'reports' && <Reports initialSearch={searchQuery} />}
           {page === 'settings' && <Settings />}
         </div>
       </main>

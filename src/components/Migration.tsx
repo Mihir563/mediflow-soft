@@ -11,6 +11,8 @@ import { Input } from '@/components/ui/input';
 export default function Migration() {
   const [itemsFile, setItemsFile] = useState<File | null>(null);
   const [partiesFile, setPartiesFile] = useState<File | null>(null);
+  const [purchaseFile, setPurchaseFile] = useState<File | null>(null);
+  const [saleFile, setSaleFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>('');
   const [logs, setLogs] = useState<string[]>([]);
 
@@ -106,6 +108,95 @@ export default function Migration() {
     return inserted;
   };
 
+  const processTransactions = async (file: File, db: Database, type: 'sale' | 'purchase') => {
+    addLog(`Reading ${type} file: ${file.name}`);
+    const buffer = await file.arrayBuffer();
+    const uint8 = new Uint8Array(buffer);
+    const workbook = XLSX.read(uint8, { type: 'array' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const json: any[] = XLSX.utils.sheet_to_json(sheet);
+    
+    addLog(`${type} rows parsed: ${json.length}`);
+    if (json.length === 0) return 0;
+    
+    let txnInserted = 0;
+    let itemsInserted = 0;
+    
+    // Pre-cache maps to avoid slow lookups
+    const itemsRes = await db.select<any[]>('SELECT id, name FROM items');
+    const itemMap = new Map(itemsRes.map(i => [i.name.toLowerCase().trim(), i.id]));
+    
+    const partiesRes = await db.select<any[]>('SELECT id, name FROM parties');
+    const partyMap = new Map(partiesRes.map(p => [p.name.toLowerCase().trim(), p.id]));
+
+    // Group rows by invoice_no since multiple items belong to one invoice
+    const txns = new Map<string, any[]>();
+    for (const row of json) {
+      const invNo = String(row['Invoice No./Txn No.'] || row['Invoice No'] || row['Order No'] || '').trim();
+      if (!invNo) continue;
+      if (!txns.has(invNo)) txns.set(invNo, []);
+      txns.get(invNo)!.push(row);
+    }
+
+    for (const [invNo, rows] of txns.entries()) {
+      const first = rows[0];
+      const dateStr = String(first['Date'] || '');
+      let isoDate = new Date().toISOString();
+      if (dateStr) {
+        // Handle DD/MM/YYYY or DD-MM-YYYY
+        const parts = dateStr.split(/[-/]/);
+        if (parts.length === 3) isoDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}T12:00:00Z`).toISOString();
+      }
+      
+      const partyName = String(first['Party Name'] || '').toLowerCase().trim();
+      const partyId = partyName ? (partyMap.get(partyName) || null) : null;
+      const totalAmount = parseFloat(first['Total Amount'] || first['Amount'] || first['Purchase Amount'] || first['Sale Amount']) || 0;
+      const paymentType = String(first['Payment Type'] || 'Cash');
+      const paidStr = first['Received/Paid Amount'] || first['Received Amount'] || first['Paid Amount'];
+      const paidAmt = paidStr ? parseFloat(paidStr) : totalAmount;
+      const balStr = first['Balance Due'] || first['Balance'];
+      const balanceDue = balStr ? parseFloat(balStr) : 0;
+      const status = String(first['Payment Status'] || (balanceDue > 0 ? 'unpaid' : 'paid')).toLowerCase();
+
+      try {
+        const res = await db.execute(
+          `INSERT INTO transactions (invoice_no, date, party_id, type, total_amount, paid_amount, balance_due, status, payment_type)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [invNo, isoDate, partyId, type, totalAmount, paidAmt, balanceDue, status, paymentType]
+        );
+        txnInserted++;
+        const txnId = res.lastInsertId;
+
+        // Insert items
+        for (const row of rows) {
+          const itemName = String(row['Item Name'] || '').toLowerCase().trim();
+          if (!itemName) continue;
+          
+          const itemId = itemMap.get(itemName) || null;
+          const qty = parseFloat(row['Quantity'] || row['Quantity In'] || row['Quantity Out']) || 1;
+          const price = parseFloat(row['UnitPrice'] || row['Unit Price'] || row['Price']) || 0;
+          const discPct = parseFloat(row['Discount Percent'] || '0') || 0;
+          const taxPct = parseFloat(row['Tax Percent'] || row['GST'] || '0') || 0;
+          const amount = parseFloat(row['Amount'] || row['Total Amount']) || 0;
+          const batch = String(row['Batch No.'] || row['Batch'] || '');
+          const exp = String(row['Exp. Date'] || row['Expiry'] || '');
+
+          await db.execute(
+            `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, price, amount, discount_pct, tax_pct, batch_no, expiry_date)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [txnId, itemId, String(row['Item Name'] || ''), qty, price, amount, discPct, taxPct, batch, exp]
+          );
+          itemsInserted++;
+        }
+      } catch (err: any) {
+        addLog(`Error inserting ${type} txn ${invNo}: ${err.message}`);
+      }
+    }
+
+    addLog(`${type} done: ${txnInserted} txns, ${itemsInserted} items inserted.`);
+    return txnInserted;
+  };
+
   const handleMigrate = async () => {
     setLogs([]);
     setStatus('Connecting to database...');
@@ -133,6 +224,8 @@ export default function Migration() {
 
       let itemCount = 0;
       let partyCount = 0;
+      let purchaseCount = 0;
+      let saleCount = 0;
       
       if (itemsFile) {
         setStatus('Processing items...');
@@ -144,11 +237,21 @@ export default function Migration() {
         partyCount = await processParties(partiesFile, db);
       }
 
+      if (purchaseFile) {
+        setStatus('Processing purchases...');
+        purchaseCount = await processTransactions(purchaseFile, db, 'purchase');
+      }
+
+      if (saleFile) {
+        setStatus('Processing sales...');
+        saleCount = await processTransactions(saleFile, db, 'sale');
+      }
+
       // Verify after migration
       const finalItems = await db.select<any[]>('SELECT COUNT(*) as cnt FROM items');
       addLog(`Total items in DB after migration: ${finalItems[0]?.cnt}`);
       
-      setStatus(`✅ Migration complete! Items: ${itemCount}, Parties: ${partyCount}`);
+      setStatus(`✅ Migration complete! Items: ${itemCount}, Parties: ${partyCount}, Purchases: ${purchaseCount}, Sales: ${saleCount}`);
     } catch (error: any) {
       addLog(`FATAL ERROR: ${error.message || JSON.stringify(error)}`);
       setStatus(`❌ Error: ${error.message}`);
@@ -163,15 +266,25 @@ export default function Migration() {
           <CardDescription>Upload Vyapar Excel sheets to seed local SQLite</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="items">Export Items.xlsx</Label>
-            <Input id="items" type="file" accept=".xlsx" onChange={(e) => setItemsFile(e.target.files?.[0] || null)} />
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="items">Export Items.xlsx</Label>
+              <Input id="items" type="file" accept=".xlsx" onChange={(e) => setItemsFile(e.target.files?.[0] || null)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="parties">PartyReport.xlsx</Label>
+              <Input id="parties" type="file" accept=".xlsx" onChange={(e) => setPartiesFile(e.target.files?.[0] || null)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="purchases">Purchase Report.xlsx</Label>
+              <Input id="purchases" type="file" accept=".xlsx" onChange={(e) => setPurchaseFile(e.target.files?.[0] || null)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sales">Sale Report.xlsx</Label>
+              <Input id="sales" type="file" accept=".xlsx" onChange={(e) => setSaleFile(e.target.files?.[0] || null)} />
+            </div>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="parties">PartyReport.xlsx</Label>
-            <Input id="parties" type="file" accept=".xlsx" onChange={(e) => setPartiesFile(e.target.files?.[0] || null)} />
-          </div>
-          <Button onClick={handleMigrate} disabled={!itemsFile && !partiesFile}>Run Migration</Button>
+          <Button onClick={handleMigrate} disabled={!itemsFile && !partiesFile && !purchaseFile && !saleFile} className="w-full">Run Full Migration</Button>
           {status && <p className="text-sm mt-2 font-medium">{status}</p>}
           
           {logs.length > 0 && (

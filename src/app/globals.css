@@ -45,6 +45,14 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Semantic Theme Variables */
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-success: var(--success);
+  --color-success-hover: var(--success-hover);
+  --color-sidebar-bg: var(--sidebar-bg);
+  --color-sidebar-border-color: var(--sidebar-border-color);
 }
 
 :root {
@@ -80,6 +88,14 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Semantic Colors for Easy Theming */
+  --brand: #2563eb; /* blue-600 */
+  --brand-hover: #1d4ed8; /* blue-700 */
+  --success: #16a34a; /* green-600 */
+  --success-hover: #15803d; /* green-700 */
+  --sidebar-bg: #0f172a; /* slate-900 */
+  --sidebar-border-color: #1e293b; /* slate-800 */
 }
 
 .dark {

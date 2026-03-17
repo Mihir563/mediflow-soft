@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { getDB } from '@/lib/db';
 import { Search, X, FileText, Package, Users } from 'lucide-react';
 
-interface GlobalSearchProps { onNavigate?: (page: string) => void; }
+interface GlobalSearchProps { onNavigate?: (page: string, query?: string) => void; }
 
 export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
   const [open, setOpen] = useState(false);
@@ -25,22 +25,70 @@ export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
-  const search = useCallback(async (q: string) => {
-    setQuery(q);
-    if (!q.trim() || q.length < 2) { setResults({ items: [], parties: [], transactions: [] }); return; }
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const doSearch = useCallback(async (q: string) => {
+    if (!q.trim() || q.length < 2) { setResults({ items: [], parties: [], transactions: [] }); setLoading(false); return; }
     setLoading(true);
     try {
       const db = await getDB();
+      const words = q.trim().split(/\s+/).filter(w => w.length > 0);
       const like = `%${q}%`;
-      const [items, parties, transactions] = await Promise.all([
-        db.select<any[]>(`SELECT id,name,category,sale_price,current_stock,tax_rate FROM items WHERE name LIKE $1 LIMIT 6`, [like]),
-        db.select<any[]>(`SELECT id,name,phone,type FROM parties WHERE name LIKE $1 OR phone LIKE $1 LIMIT 5`, [like]),
-        db.select<any[]>(`SELECT t.id,t.invoice_no,t.date,t.total_amount,t.type,p.name as party_name FROM transactions t LEFT JOIN parties p ON t.party_id=p.id WHERE t.invoice_no LIKE $1 OR p.name LIKE $1 ORDER BY t.id DESC LIMIT 5`, [like]),
-      ]);
+      const wordLikes = words.map(w => `%${w}%`);
+
+      // Fast item name matching: each word must appear in name
+      const itemWordConds = words.map((_, i) => `name LIKE $${i + 1}`).join(' AND ');
+      const partyWordConds = words.map((_, i) => `name LIKE $${i + 1}`).join(' AND ');
+
+      // Step 1: Fast items query — no JOINs, just search items table directly
+      const items = await db.select<any[]>(
+        `SELECT id, name, category, sale_price, current_stock, tax_rate FROM items WHERE (${itemWordConds}) OR hsn LIKE $${words.length + 1} ORDER BY name LIMIT 8`,
+        [...wordLikes, like]
+      );
+
+      // Step 2: Fetch last supplier for found items — fast individual queries for top 8
+      if (items.length > 0) {
+        const supplierPromises = items.map(async (it: any) => {
+          // Hyper-aggressive normalization: remove all spaces and compare lowercase
+          const normalizedName = it.name.replace(/\s+/g, '').toLowerCase();
+          const res = await db.select<any[]>(`
+            SELECT p.name as supplier 
+            FROM transaction_items ti 
+            JOIN transactions t ON t.id=ti.txn_id AND t.type='purchase' 
+            JOIN parties p ON p.id=t.party_id 
+            WHERE ti.item_id = $1 OR REPLACE(LOWER(ti.item_name), ' ', '') LIKE $2
+            ORDER BY t.id DESC LIMIT 1
+          `, [it.id, `%${normalizedName}%`]);
+          return res.length > 0 ? res[0].supplier : null;
+        });
+        const suppliers = await Promise.all(supplierPromises);
+        items.forEach((it: any, i: number) => { it.last_supplier = suppliers[i]; });
+      }
+
+      // Step 3: Parties — simple and fast
+      const parties = await db.select<any[]>(
+        `SELECT id,name,phone,type FROM parties WHERE (${partyWordConds}) OR phone LIKE $${words.length + 1} LIMIT 5`,
+        [...wordLikes, like]
+      );
+
+      // Step 4: Transactions — simplified
+      const transactions = await db.select<any[]>(
+        `SELECT t.id,t.invoice_no,t.date,t.total_amount,t.type,p.name as party_name FROM transactions t LEFT JOIN parties p ON t.party_id=p.id WHERE t.invoice_no LIKE $1 OR p.name LIKE $1 ORDER BY t.id DESC LIMIT 8`,
+        [like]
+      );
+
       setResults({ items, parties, transactions });
     } catch (e) { console.error(e); }
     setLoading(false);
   }, []);
+
+  const search = useCallback((q: string) => {
+    setQuery(q);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!q.trim() || q.length < 2) { setResults({ items: [], parties: [], transactions: [] }); return; }
+    setLoading(true);
+    debounceRef.current = setTimeout(() => doSearch(q), 200);
+  }, [doSearch]);
 
   const hasResults = results.items.length + results.parties.length + results.transactions.length > 0;
 
@@ -98,18 +146,21 @@ export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
                 <div className="mb-2">
                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-1.5">Items</p>
                   {results.items.map(item => (
-                    <button key={item.id} onClick={() => { onNavigate?.('items'); setOpen(false); setQuery(''); }}
+                    <button key={`item-${item.id}`} onClick={() => { onNavigate?.('items', item.name); setOpen(false); setQuery(''); }}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-blue-50 text-left transition-colors group">
                       <div className="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
                         <Package size={15} className="text-blue-600" />
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="font-medium text-slate-800 truncate">{item.name}</p>
-                        <p className="text-xs text-slate-400">{item.category || 'No category'} • Stock: {item.current_stock}</p>
+                        <p className="text-[11px] text-slate-400">
+                          {item.category || 'No category'} • Stock: {item.current_stock}
+                        </p>
+                        {item.last_supplier && <p className="text-[10px] text-brand font-semibold mt-0.5">⬅ Purchased from: {item.last_supplier}</p>}
                       </div>
                       <div className="text-right flex-shrink-0">
                         <p className="font-bold text-slate-800 font-mono">₹{item.sale_price}</p>
-                        {item.tax_rate > 0 && <p className="text-xs text-slate-400">GST {item.tax_rate}%</p>}
+                        {item.tax_rate > 0 && <p className="text-[10px] text-slate-400">GST {item.tax_rate}%</p>}
                       </div>
                     </button>
                   ))}
@@ -121,7 +172,7 @@ export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
                 <div className="mb-2">
                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-1.5">Parties</p>
                   {results.parties.map(p => (
-                    <button key={p.id} onClick={() => { onNavigate?.('parties'); setOpen(false); setQuery(''); }}
+                    <button key={p.id} onClick={() => { onNavigate?.('parties', p.name); setOpen(false); setQuery(''); }}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-green-50 text-left transition-colors">
                       <div className="w-9 h-9 rounded-lg bg-green-100 flex items-center justify-center flex-shrink-0">
                         <Users size={15} className="text-green-600" />
@@ -149,6 +200,7 @@ export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
                       <div className="flex-1">
                         <p className="font-medium text-slate-800 font-mono">{t.invoice_no || `#${t.id}`}</p>
                         <p className="text-xs text-slate-400">{t.party_name || 'Walk-in'} • {t.date?.split('T')[0]}</p>
+                        {t.matched_batch && <p className="text-[10px] text-brand font-medium mt-0.5">Matched Batch: {t.matched_batch}</p>}
                       </div>
                       <div className="text-right flex-shrink-0">
                         <p className="font-bold text-slate-800 font-mono">₹{t.total_amount?.toFixed(2)}</p>

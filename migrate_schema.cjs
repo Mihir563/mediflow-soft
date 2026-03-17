@@ -11,8 +11,14 @@ const tryAlter = (sql) => { try { db.exec(sql); console.log('✅', sql.slice(0,6
 
 tryAlter(`ALTER TABLE items ADD COLUMN tax_rate REAL DEFAULT 0`);
 tryAlter(`ALTER TABLE items ADD COLUMN discount REAL DEFAULT 0`);
+tryAlter(`ALTER TABLE items ADD COLUMN min_stock REAL DEFAULT 0`);
+tryAlter(`ALTER TABLE items ADD COLUMN inclusive_tax INTEGER DEFAULT 0`);
 tryAlter(`ALTER TABLE transactions ADD COLUMN payment_type TEXT DEFAULT 'cash'`);
 tryAlter(`ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'paid'`);
+tryAlter(`ALTER TABLE transactions ADD COLUMN paid_amount REAL DEFAULT 0`);
+tryAlter(`ALTER TABLE transactions ADD COLUMN balance_due REAL DEFAULT 0`);
+tryAlter(`ALTER TABLE transactions ADD COLUMN challan_no TEXT`);
+tryAlter(`ALTER TABLE transactions ADD COLUMN description TEXT`);
 tryAlter(`ALTER TABLE transaction_items ADD COLUMN item_name TEXT`);
 tryAlter(`ALTER TABLE transaction_items ADD COLUMN unit TEXT`);
 tryAlter(`ALTER TABLE transaction_items ADD COLUMN discount_pct REAL DEFAULT 0`);

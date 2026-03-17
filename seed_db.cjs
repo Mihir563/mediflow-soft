@@ -12,6 +12,8 @@ const ITEMS_FILE = path.join(__dirname, 'data', 'Export Items (1).xlsx');
 const PARTIES_FILE = path.join(__dirname, 'data', 'PartyReport , data of parties.xlsx');
 const ALL_TXN_FILE = path.join(__dirname, 'data', 'AllTransactionsReport_01_03_19_to_31_03_26, data for the details of all medicals.xlsx');
 const STOCK_FILE = path.join(__dirname, 'data', 'StockDetailReport_01_03_19_to_14_03_26, stock details.xlsx');
+const PURCHASE_FILE = path.join(__dirname, 'data', 'PurchaseReport_01_03_19_to_31_03_26, purchase history.xlsx');
+const SALE_FILE = path.join(__dirname, 'data', 'SaleReport_01_03_19_to_31_03_26, sale report.xlsx');
 
 console.log('Opening DB at:', DB_PATH);
 const db = BetterSqlite(DB_PATH);
@@ -26,9 +28,11 @@ db.exec(`
     purchase_price REAL DEFAULT 0,
     opening_stock REAL DEFAULT 0,
     current_stock REAL DEFAULT 0,
+    min_stock REAL DEFAULT 0,
     category TEXT,
     tax_rate REAL DEFAULT 0,
-    discount REAL DEFAULT 0
+    discount REAL DEFAULT 0,
+    inclusive_tax INTEGER DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS parties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,9 +47,13 @@ db.exec(`
     date TEXT NOT NULL,
     party_id INTEGER,
     total_amount REAL NOT NULL DEFAULT 0,
+    paid_amount REAL DEFAULT 0,
+    balance_due REAL DEFAULT 0,
     type TEXT NOT NULL DEFAULT 'sale',
     payment_type TEXT DEFAULT 'cash',
     status TEXT DEFAULT 'paid',
+    challan_no TEXT,
+    description TEXT,
     FOREIGN KEY(party_id) REFERENCES parties(id)
   );
   CREATE TABLE IF NOT EXISTS transaction_items (
@@ -84,23 +92,25 @@ const itemsSheet = itemsWb.Sheets[itemsWb.SheetNames[0]];
 const itemsJson = XLSX.utils.sheet_to_json(itemsSheet);
 console.log(`  ${itemsJson.length} rows found`);
 
-const insertItem = db.prepare(`INSERT OR IGNORE INTO items (name,hsn,unit,sale_price,purchase_price,opening_stock,current_stock,category,tax_rate,discount) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+const insertItem = db.prepare(`INSERT OR IGNORE INTO items (name,hsn,unit,sale_price,purchase_price,opening_stock,current_stock,min_stock,category,tax_rate,discount,inclusive_tax) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
 const seedItems = db.transaction((rows) => {
   let n = 0;
   for (const row of rows) {
     const name = (row['Item name*'] || '').toString().trim();
     if (!name) continue;
-    const hsn = String(row['Item code'] || '');
+    const hsn = String(row['HSN'] || row['Item code'] || '');
     const unit = String(row['Base Unit (x)'] || '');
     const sale_price = parseFloat(row['Default Mrp'] || row['Sale price']) || 0;
     const purchase_price = parseFloat(row['Purchase price']) || 0;
     const stock = parseFloat(row['Current stock quantity'] || 0);
+    const min_stock = parseFloat(row['Minimum stock quantity'] || 0);
     const category = String(row['Category'] || '');
     const taxStr = String(row['Tax Rate'] || '');
     const taxMatch = taxStr.match(/(\d+(\.\d+)?)/);
     const tax_rate = taxMatch ? parseFloat(taxMatch[1]) : 0;
     const discount = parseFloat(row['Sale Discount'] || 0);
-    insertItem.run(name, hsn, unit, sale_price, purchase_price, stock, stock, category, tax_rate, discount);
+    const inclusive_tax = String(row['Inclusive Of Tax'] || '').toLowerCase() === 'yes' ? 1 : 0;
+    insertItem.run(name, hsn, unit, sale_price, purchase_price, stock, stock, min_stock, category, tax_rate, discount, inclusive_tax);
     n++;
   }
   return n;
@@ -135,6 +145,50 @@ const seedParties = db.transaction((rows) => {
 });
 const partyCount = seedParties(partiesJson);
 console.log(`  ✅ ${partyCount} parties inserted`);
+
+// ── 2b. Enrich Parties from PurchaseReport + SaleReport ────────
+console.log('\n🔗 Enriching parties from PurchaseReport + SaleReport...');
+const updatePartyGstin = db.prepare(`UPDATE parties SET gstin=COALESCE(NULLIF(gstin,''),?), phone=COALESCE(NULLIF(phone,''),?) WHERE name=? COLLATE NOCASE`);
+
+function enrichPartiesFromFile(filePath, partyNameCol, gstinCol, phoneCol) {
+  try {
+    const wb = XLSX.readFile(filePath);
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+    let count = 0;
+    const txnEnrich = db.transaction((rows) => {
+      for (const row of rows) {
+        const name = String(row[partyNameCol] || '').trim();
+        if (!name) continue;
+        const gstin = String(row[gstinCol] || '').trim();
+        const phone = String(row[phoneCol] || '').trim();
+        if (gstin || phone) {
+          updatePartyGstin.run(gstin, phone, name);
+          count++;
+        }
+        // Also auto-insert new parties found in reports but not in PartyReport
+        const exists = db.prepare(`SELECT id FROM parties WHERE name=? COLLATE NOCASE`).get(name);
+        if (!exists && name.length > 1) {
+          try {
+            db.prepare(`INSERT OR IGNORE INTO parties (name,gstin,phone,type) VALUES (?,?,?,'customer')`).run(name, gstin, phone);
+          } catch(_) {}
+        }
+      }
+    });
+    txnEnrich(rows);
+    return rows.length;
+  } catch (e) {
+    console.log('  ⚠️  Could not read file:', e.message);
+    return 0;
+  }
+}
+
+// PurchaseReport columns: Party Name, GSTIN, Party Phone No.
+enrichPartiesFromFile(PURCHASE_FILE, 'Party Name', 'GSTIN', 'Party Phone No.');
+// SaleReport columns: Party Name, GSTIN, Party Phone No.  
+enrichPartiesFromFile(SALE_FILE, 'Party Name', 'GSTIN', 'Party Phone No.');
+console.log(`  ✅ Parties enriched with GSTIN/phone from Purchase & Sale reports`);
+
 
 // ── 3. Seed Transactions from AllTransactionsReport ────────────
 console.log('\n📋 Reading All Transactions (Item Details sheet)...');
@@ -221,7 +275,7 @@ function parseDate(s) {
   return s + 'T00:00:00';
 }
 
-const insertTxn = db.prepare(`INSERT INTO transactions (invoice_no, date, party_id, total_amount, type, payment_type, status) VALUES (?,?,?,?,?,?,?)`);
+const insertTxn = db.prepare(`INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
 const insertTxnItem = db.prepare(`INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, discount_amt, tax_pct, tax_amt, amount, batch_no, expiry_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 
 const seedTxns = db.transaction(() => {
@@ -239,9 +293,16 @@ const seedTxns = db.transaction(() => {
     const partyName = String(summaryRow ? summaryRow[COL.partyName] : firstRow[COL.partyName] || '').trim().toUpperCase();
     const partyId = partyByName.get(partyName) || null;
     const paymentType = String(summaryRow ? summaryRow['__EMPTY_5'] : 'cash').toLowerCase() || 'cash';
-    const status = String(summaryRow ? summaryRow['__EMPTY_9'] : 'paid').toLowerCase().includes('paid') ? 'paid' : 'unpaid';
+    const statusStr = String(summaryRow ? summaryRow['__EMPTY_9'] : 'paid').toLowerCase();
+    const status = statusStr.includes('unpaid') ? 'unpaid' : statusStr.includes('partial') ? 'partial' : 'paid';
+    const paidAmt = parseFloat(summaryRow ? summaryRow['__EMPTY_6'] || summaryRow['__EMPTY_7'] : 0) || 0;
+    const balDue = parseFloat(summaryRow ? summaryRow['__EMPTY_8'] : 0) || 0;
+    const challanNo = String(rows[0]?.[COL.challan] || '');
+    const desc = String(summaryRow ? summaryRow['__EMPTY_10'] : '');
+    const paidAmtFinal = paidAmt;
+    const balDueFinal = balDue;
 
-    const res = insertTxn.run(invNo, date, partyId, total, txnType, paymentType, status);
+    const res = insertTxn.run(invNo, date, partyId, total, paidAmt, balDue, txnType, paymentType, status, challanNo, desc);
     const txnId = res.lastInsertRowid;
     txnCount++;
 

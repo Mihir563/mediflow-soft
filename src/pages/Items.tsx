@@ -3,27 +3,23 @@ import { useState, useEffect, useCallback } from 'react';
 import { getDB } from '@/lib/db';
 import { Search, Plus, Edit2, Trash2, Save, X, AlertTriangle, Package } from 'lucide-react';
 
+import ItemModal from '@/components/ItemModal';
+
 interface Item {
   id: number; name: string; hsn: string; unit: string;
   sale_price: number; purchase_price: number; opening_stock: number;
-  current_stock: number; category: string; tax_rate: number; discount: number;
-  last_supplier?: string;
+  current_stock: number; min_stock: number; category: string; tax_rate: number; discount: number;
+  inclusive_tax: number; last_supplier?: string;
 }
 
-const emptyForm = {
-  name: '', hsn: '', unit: '', sale_price: 0, purchase_price: 0,
-  opening_stock: 0, current_stock: 0, category: '', tax_rate: 0, discount: 0
-};
-
-export default function Items() {
+export default function Items({ initialSearch = '' }: { initialSearch?: string }) {
   const [items, setItems] = useState<Item[]>([]);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
   const [category, setCategory] = useState('');
   const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
   const [categories, setCategories] = useState<string[]>([]);
   const [editItem, setEditItem] = useState<any>(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ ...emptyForm });
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 50;
@@ -32,7 +28,7 @@ export default function Items() {
     const db = await getDB();
     const q = `%${search}%`;
     let stockWhere = '';
-    if (stockFilter === 'low') stockWhere = 'AND current_stock > 0 AND current_stock < 10';
+    if (stockFilter === 'low') stockWhere = 'AND current_stock > 0 AND current_stock <= CASE WHEN min_stock > 0 THEN min_stock ELSE 10 END';
     if (stockFilter === 'out') stockWhere = 'AND current_stock <= 0';
 
     // Join with last supplier from purchase transactions
@@ -58,32 +54,25 @@ export default function Items() {
   }, [search, category, page, stockFilter]);
 
   useEffect(() => { load(); }, [load]);
+  
+  useEffect(() => {
+    if (initialSearch) setSearch(initialSearch);
+  }, [initialSearch]);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'n') { e.preventDefault(); setShowAdd(true); setForm({ ...emptyForm }); }
+      if (e.ctrlKey && e.key === 'n') { e.preventDefault(); setShowAdd(true); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, []);
 
-  const saveItem = async () => {
-    const db = await getDB();
-    try {
-      if (editItem) {
-        await db.execute(
-          `UPDATE items SET name=$1,hsn=$2,unit=$3,sale_price=$4,purchase_price=$5,opening_stock=$6,current_stock=$7,category=$8,tax_rate=$9,discount=$10 WHERE id=$11`,
-          [form.name, form.hsn, form.unit, form.sale_price, form.purchase_price, form.opening_stock, form.current_stock, form.category, form.tax_rate, form.discount, editItem.id]
-        );
-      } else {
-        await db.execute(
-          `INSERT INTO items (name,hsn,unit,sale_price,purchase_price,opening_stock,current_stock,category,tax_rate,discount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [form.name, form.hsn, form.unit, form.sale_price, form.purchase_price, form.opening_stock, form.current_stock, form.category, form.tax_rate, form.discount]
-        );
-      }
-      setStatus('✅ Saved!'); setShowAdd(false); setEditItem(null); load();
-      setTimeout(() => setStatus(''), 2000);
-    } catch (e: any) { setStatus(`❌ ${e.message}`); }
+  const handleItemSaved = () => {
+    setStatus('✅ Saved!'); 
+    setShowAdd(false); 
+    setEditItem(null); 
+    load();
+    setTimeout(() => setStatus(''), 2000);
   };
 
   const deleteItem = async (id: number) => {
@@ -95,18 +84,12 @@ export default function Items() {
 
   const startEdit = (item: Item) => {
     setEditItem(item);
-    setForm({
-      name: item.name, hsn: item.hsn || '', unit: item.unit || '',
-      sale_price: item.sale_price, purchase_price: item.purchase_price,
-      opening_stock: item.opening_stock, current_stock: item.current_stock,
-      category: item.category || '', tax_rate: item.tax_rate || 0, discount: item.discount || 0
-    });
     setShowAdd(true);
   };
 
   const stockCounts = {
     out: items.filter(i => i.current_stock <= 0).length,
-    low: items.filter(i => i.current_stock > 0 && i.current_stock < 10).length,
+    low: items.filter(i => i.current_stock > 0 && i.current_stock <= (i.min_stock || 10)).length,
   };
 
   return (
@@ -134,8 +117,8 @@ export default function Items() {
           </div>
           {status && <span className="text-sm">{status}</span>}
         </div>
-        <button onClick={() => { setShowAdd(true); setEditItem(null); setForm({ ...emptyForm }); }}
-          className="flex items-center gap-2 h-9 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium">
+        <button onClick={() => { setShowAdd(true); setEditItem(null); }}
+          className="flex items-center gap-2 h-9 px-4 bg-brand hover:bg-brand-hover text-white rounded-lg text-sm font-medium shadow-sm transition-colors">
           <Plus size={14} /> Add Item <kbd className="text-xs opacity-70 ml-1 font-mono">Ctrl+N</kbd>
         </button>
       </div>
@@ -176,7 +159,10 @@ export default function Items() {
                 </td>
                 <td className="px-2 py-2.5 text-slate-500 text-xs font-mono">{item.hsn || '—'}</td>
                 <td className="px-2 py-2.5 text-slate-500 text-xs">{item.unit || '—'}</td>
-                <td className="px-2 py-2.5 text-right font-mono font-semibold text-slate-800">₹{item.sale_price}</td>
+                <td className="px-2 py-2.5 text-right font-mono font-semibold text-slate-800">
+                  ₹{item.sale_price}
+                  {item.inclusive_tax ? <span className="ml-1 text-[10px] text-green-600 font-sans leading-none block">Incl. Tax</span> : null}
+                </td>
                 <td className="px-2 py-2.5 text-right font-mono text-slate-500">₹{item.purchase_price}</td>
                 <td className="px-2 py-2.5 text-right">
                   {item.tax_rate > 0
@@ -189,7 +175,7 @@ export default function Items() {
                     : <span className="text-slate-300 text-xs">0%</span>}
                 </td>
                 <td className="px-2 py-2.5 text-right">
-                  <span className={`text-sm font-bold ${item.current_stock <= 0 ? 'text-red-600' : item.current_stock < 10 ? 'text-yellow-600' : 'text-green-600'}`}>
+                  <span className={`text-sm font-bold ${item.current_stock <= 0 ? 'text-red-600' : item.current_stock <= (item.min_stock || 10) ? 'text-yellow-600' : 'text-green-600'}`}>
                     {item.current_stock <= 0 && <AlertTriangle size={11} className="inline mr-1" />}
                     {item.current_stock}
                   </span>
@@ -223,86 +209,11 @@ export default function Items() {
 
       {/* Add/Edit Modal */}
       {showAdd && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && setShowAdd(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-bold text-lg text-slate-800">{editItem ? 'Edit Item' : 'Add New Item'}</h3>
-              <button onClick={() => { setShowAdd(false); setEditItem(null); }} className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400"><X size={16} /></button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs text-slate-500 font-medium block mb-1">Item Name *</label>
-                <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} autoFocus
-                  className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">Category</label>
-                  <input value={form.category} onChange={e => setForm({...form, category: e.target.value})}
-                    list="cat-list" className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  <datalist id="cat-list">{categories.map(c => <option key={c} value={c} />)}</datalist>
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">HSN Code</label>
-                  <input value={form.hsn} onChange={e => setForm({...form, hsn: e.target.value})}
-                    className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">Unit</label>
-                  <input value={form.unit} onChange={e => setForm({...form, unit: e.target.value})}
-                    list="unit-list" className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  <datalist id="unit-list">
-                    <option value="PCS" /><option value="BOX" /><option value="STRIP" />
-                    <option value="ML" /><option value="GM" /><option value="LTR" /><option value="NOS" />
-                  </datalist>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">Sale Price (MRP) ₹</label>
-                  <input type="number" value={form.sale_price} onChange={e => setForm({...form, sale_price: parseFloat(e.target.value) || 0})}
-                    className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">Purchase Price ₹</label>
-                  <input type="number" value={form.purchase_price} onChange={e => setForm({...form, purchase_price: parseFloat(e.target.value) || 0})}
-                    className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">GST Rate %</label>
-                  <input type="number" min={0} value={form.tax_rate} onChange={e => setForm({...form, tax_rate: parseFloat(e.target.value) || 0})}
-                    className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">Default Discount %</label>
-                  <input type="number" min={0} max={100} value={form.discount} onChange={e => setForm({...form, discount: parseFloat(e.target.value) || 0})}
-                    className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">Opening Stock</label>
-                  <input type="number" value={form.opening_stock} onChange={e => { const v = parseFloat(e.target.value) || 0; setForm({...form, opening_stock: v, current_stock: v}); }}
-                    className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 font-medium block mb-1">Current Stock</label>
-                  <input type="number" value={form.current_stock} onChange={e => setForm({...form, current_stock: parseFloat(e.target.value) || 0})}
-                    className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-              </div>
-              {status && <p className="text-sm text-center font-medium">{status}</p>}
-            </div>
-            <div className="flex gap-3 mt-5">
-              <button onClick={() => { setShowAdd(false); setEditItem(null); }} className="flex-1 h-10 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
-              <button onClick={saveItem} className="flex-1 h-10 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2">
-                <Save size={14} /> {editItem ? 'Update' : 'Add'} Item
-              </button>
-            </div>
-          </div>
-        </div>
+        <ItemModal
+          onClose={() => { setShowAdd(false); setEditItem(null); }}
+          onSave={handleItemSaved}
+          itemToEdit={editItem}
+        />
       )}
     </div>
   );
