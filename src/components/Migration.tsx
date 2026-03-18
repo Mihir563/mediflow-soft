@@ -8,6 +8,41 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 
+const parseSheetRows = (sheet: XLSX.WorkSheet) => {
+  const matrix = XLSX.utils.sheet_to_json<(string | number | null)[]>(sheet, { header: 1, defval: null });
+  const headerIndex = matrix.findIndex((row) =>
+    row.some((cell) => typeof cell === 'string' && (
+      cell.includes('Item name') ||
+      cell === 'Name' ||
+      cell === 'Date' ||
+      cell === 'Party Name' ||
+      cell === 'Invoice No./Txn No.'
+    ))
+  );
+
+  if (headerIndex === -1) {
+    return [] as Record<string, string | number | null>[];
+  }
+
+  const headers = (matrix[headerIndex] || []).map((cell, index) => {
+    const text = String(cell ?? '').trim();
+    return text || `__col_${index}`;
+  });
+
+  return matrix
+    .slice(headerIndex + 1)
+    .filter((row) => row.some((cell) => cell !== null && String(cell).trim() !== ''))
+    .map((row) => {
+      const entry: Record<string, string | number | null> = {};
+      headers.forEach((header, index) => {
+        entry[header] = row[index] ?? null;
+      });
+      return entry;
+    });
+};
+
+const normalizeName = (value: string) => value.toLowerCase().replace(/[\s./()-]+/g, '');
+
 export default function Migration() {
   const [itemsFile, setItemsFile] = useState<File | null>(null);
   const [partiesFile, setPartiesFile] = useState<File | null>(null);
@@ -30,7 +65,7 @@ export default function Migration() {
     addLog(`Sheets found: ${workbook.SheetNames.join(', ')}`);
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    const json: any[] = XLSX.utils.sheet_to_json(sheet);
+    const json: any[] = parseSheetRows(sheet);
     
     addLog(`Rows parsed: ${json.length}`);
     if (json.length > 0) {
@@ -73,7 +108,7 @@ export default function Migration() {
     const uint8 = new Uint8Array(buffer);
     const workbook = XLSX.read(uint8, { type: 'array' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const json: any[] = XLSX.utils.sheet_to_json(sheet);
+    const json: any[] = parseSheetRows(sheet);
     
     addLog(`Party rows parsed: ${json.length}`);
     if (json.length > 0) {
@@ -113,33 +148,63 @@ export default function Migration() {
     const buffer = await file.arrayBuffer();
     const uint8 = new Uint8Array(buffer);
     const workbook = XLSX.read(uint8, { type: 'array' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const json: any[] = XLSX.utils.sheet_to_json(sheet);
+    const mainSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const mainJson: any[] = parseSheetRows(mainSheet);
     
-    addLog(`${type} rows parsed: ${json.length}`);
-    if (json.length === 0) return 0;
+    let itemsJson: any[] = [];
+    if (workbook.SheetNames.includes('Item Details')) {
+       itemsJson = parseSheetRows(workbook.Sheets['Item Details']);
+    }
+
+    addLog(`${type} main rows: ${mainJson.length}, item rows: ${itemsJson.length}`);
+    if (mainJson.length === 0) return 0;
     
     let txnInserted = 0;
     let itemsInserted = 0;
     
     // Pre-cache maps to avoid slow lookups
     const itemsRes = await db.select<any[]>('SELECT id, name FROM items');
-    const itemMap = new Map(itemsRes.map(i => [i.name.toLowerCase().trim(), i.id]));
+    const itemMap = new Map(itemsRes.flatMap(i => {
+      const raw = String(i.name || '').trim();
+      if (!raw) return [];
+      return [
+        [raw.toLowerCase(), i.id],
+        [normalizeName(raw), i.id],
+      ];
+    }));
     
     const partiesRes = await db.select<any[]>('SELECT id, name FROM parties');
-    const partyMap = new Map(partiesRes.map(p => [p.name.toLowerCase().trim(), p.id]));
+    const partyMap = new Map(partiesRes.flatMap(p => {
+      const raw = String(p.name || '').trim();
+      if (!raw) return [];
+      return [
+        [raw.toLowerCase(), p.id],
+        [normalizeName(raw), p.id],
+      ];
+    }));
 
     // Group rows by invoice_no since multiple items belong to one invoice
-    const txns = new Map<string, any[]>();
-    for (const row of json) {
+    const txns = new Map<string, { mainRow: any, items: any[] }>();
+    
+    for (const row of mainJson) {
       const invNo = String(row['Invoice No./Txn No.'] || row['Invoice No'] || row['Order No'] || '').trim();
       if (!invNo) continue;
-      if (!txns.has(invNo)) txns.set(invNo, []);
-      txns.get(invNo)!.push(row);
+      txns.set(invNo, { mainRow: row, items: [] });
     }
 
-    for (const [invNo, rows] of txns.entries()) {
-      const first = rows[0];
+    const sourceItems = itemsJson.length > 0 ? itemsJson : mainJson;
+    for (const row of sourceItems) {
+      const invNo = String(row['Invoice No./Txn No.'] || row['Invoice No'] || row['Order No'] || '').trim();
+      if (!invNo) continue;
+      if (!txns.has(invNo)) {
+         txns.set(invNo, { mainRow: row, items: [] });
+      }
+      txns.get(invNo)!.items.push(row);
+    }
+
+    for (const [invNo, data] of txns.entries()) {
+      const first = data.mainRow;
+      const rows = data.items;
       const dateStr = String(first['Date'] || '');
       let isoDate = new Date().toISOString();
       if (dateStr) {
@@ -148,8 +213,11 @@ export default function Migration() {
         if (parts.length === 3) isoDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}T12:00:00Z`).toISOString();
       }
       
-      const partyName = String(first['Party Name'] || '').toLowerCase().trim();
-      const partyId = partyName ? (partyMap.get(partyName) || null) : null;
+      const partyNameRaw = String(first['Party Name'] || '').trim();
+      const partyName = partyNameRaw.toLowerCase();
+      const partyId = partyName
+        ? (partyMap.get(partyName) || partyMap.get(normalizeName(partyNameRaw)) || null)
+        : null;
       const totalAmount = parseFloat(first['Total Amount'] || first['Amount'] || first['Purchase Amount'] || first['Sale Amount']) || 0;
       const paymentType = String(first['Payment Type'] || 'Cash');
       const paidStr = first['Received/Paid Amount'] || first['Received Amount'] || first['Paid Amount'];
@@ -159,20 +227,33 @@ export default function Migration() {
       const status = String(first['Payment Status'] || (balanceDue > 0 ? 'unpaid' : 'paid')).toLowerCase();
 
       try {
-        const res = await db.execute(
-          `INSERT INTO transactions (invoice_no, date, party_id, type, total_amount, paid_amount, balance_due, status, payment_type)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [invNo, isoDate, partyId, type, totalAmount, paidAmt, balanceDue, status, paymentType]
-        );
-        txnInserted++;
-        const txnId = res.lastInsertId;
+        const existingTxn = await db.select<any[]>('SELECT id FROM transactions WHERE invoice_no = $1 AND type = $2 LIMIT 1', [invNo, type]);
+        let txnId: number;
+        
+        if (existingTxn.length > 0) {
+          txnId = existingTxn[0].id;
+          await db.execute('DELETE FROM transaction_items WHERE txn_id = $1', [txnId]);
+          await db.execute(
+            `UPDATE transactions SET date=$1, party_id=$2, total_amount=$3, paid_amount=$4, balance_due=$5, status=$6, payment_type=$7 WHERE id=$8`,
+            [isoDate, partyId, totalAmount, paidAmt, balanceDue, status, paymentType, txnId]
+          );
+        } else {
+          const res = await db.execute(
+            `INSERT INTO transactions (invoice_no, date, party_id, type, total_amount, paid_amount, balance_due, status, payment_type)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [invNo, isoDate, partyId, type, totalAmount, paidAmt, balanceDue, status, paymentType]
+          );
+          txnInserted++;
+          txnId = res.lastInsertId || 0;
+        }
 
         // Insert items
         for (const row of rows) {
-          const itemName = String(row['Item Name'] || '').toLowerCase().trim();
-          if (!itemName) continue;
+          const itemNameRaw = String(row['Item Name'] || '').trim();
+          const itemName = itemNameRaw.toLowerCase();
+          if (!itemNameRaw) continue;
           
-          const itemId = itemMap.get(itemName) || null;
+          const itemId = itemMap.get(itemName) || itemMap.get(normalizeName(itemNameRaw)) || null;
           const qty = parseFloat(row['Quantity'] || row['Quantity In'] || row['Quantity Out']) || 1;
           const price = parseFloat(row['UnitPrice'] || row['Unit Price'] || row['Price']) || 0;
           const discPct = parseFloat(row['Discount Percent'] || '0') || 0;
@@ -184,7 +265,7 @@ export default function Migration() {
           await db.execute(
             `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, price, amount, discount_pct, tax_pct, batch_no, expiry_date)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [txnId, itemId, String(row['Item Name'] || ''), qty, price, amount, discPct, taxPct, batch, exp]
+            [txnId, itemId, itemNameRaw, qty, price, amount, discPct, taxPct, batch, exp]
           );
           itemsInserted++;
         }

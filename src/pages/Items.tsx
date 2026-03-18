@@ -12,12 +12,17 @@ interface Item {
   inclusive_tax: number; last_supplier?: string;
 }
 
+const normalizeSql = (column: string) =>
+  `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${column}, ''), ' ', ''), '.', ''), '-', ''), '/', ''), '(', ''), ')', ''))`;
+
 export default function Items({ initialSearch = '' }: { initialSearch?: string }) {
   const [items, setItems] = useState<Item[]>([]);
   const [search, setSearch] = useState(initialSearch);
   const [category, setCategory] = useState('');
+  const [partyId, setPartyId] = useState('');
   const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
   const [categories, setCategories] = useState<string[]>([]);
+  const [parties, setParties] = useState<{ id: number; name: string }[]>([]);
   const [editItem, setEditItem] = useState<any>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [status, setStatus] = useState('');
@@ -30,6 +35,19 @@ export default function Items({ initialSearch = '' }: { initialSearch?: string }
     let stockWhere = '';
     if (stockFilter === 'low') stockWhere = 'AND current_stock > 0 AND current_stock <= CASE WHEN min_stock > 0 THEN min_stock ELSE 10 END';
     if (stockFilter === 'out') stockWhere = 'AND current_stock <= 0';
+    const partyWhere = partyId
+      ? `AND EXISTS (
+          SELECT 1
+          FROM transaction_items ti
+          JOIN transactions t ON t.id = ti.txn_id
+          WHERE t.type='purchase'
+            AND t.party_id=${Number(partyId)}
+            AND (
+              ti.item_id=i.id
+              OR ${normalizeSql('ti.item_name')} = ${normalizeSql('i.name')}
+            )
+        )`
+      : '';
 
     // Join with last supplier from purchase transactions
     const res = await db.select<Item[]>(
@@ -37,11 +55,15 @@ export default function Items({ initialSearch = '' }: { initialSearch?: string }
         (SELECT p.name FROM transaction_items ti 
           JOIN transactions t ON t.id=ti.txn_id 
           JOIN parties p ON p.id=t.party_id
-          WHERE ti.item_id=i.id AND t.type='purchase'
+          WHERE t.type='purchase'
+            AND (
+              ti.item_id=i.id
+              OR ${normalizeSql('ti.item_name')} = ${normalizeSql('i.name')}
+            )
           ORDER BY t.id DESC LIMIT 1
         ) as last_supplier
        FROM items i
-       WHERE i.name LIKE $1 ${category ? `AND i.category='${category}'` : ''} ${stockWhere}
+       WHERE i.name LIKE $1 ${category ? `AND i.category='${category}'` : ''} ${stockWhere} ${partyWhere}
        ORDER BY i.name
        LIMIT ${PAGE_SIZE} OFFSET ${page * PAGE_SIZE}`,
       [q]
@@ -51,7 +73,11 @@ export default function Items({ initialSearch = '' }: { initialSearch?: string }
       const cats = await db.select<any[]>(`SELECT DISTINCT category FROM items WHERE category != '' ORDER BY category`);
       setCategories(cats.map(c => c.category));
     }
-  }, [search, category, page, stockFilter]);
+    if (parties.length === 0) {
+      const partyRows = await db.select<{ id: number; name: string }[]>(`SELECT id, name FROM parties ORDER BY name`);
+      setParties(partyRows);
+    }
+  }, [search, category, page, stockFilter, partyId, parties.length]);
 
   useEffect(() => { load(); }, [load]);
   
@@ -106,6 +132,11 @@ export default function Items({ initialSearch = '' }: { initialSearch?: string }
             className="h-9 border border-slate-200 rounded-lg text-sm px-3 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
             <option value="">All Categories</option>
             {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={partyId} onChange={e => { setPartyId(e.target.value); setPage(0); }}
+            className="h-9 border border-slate-200 rounded-lg text-sm px-3 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 max-w-56">
+            <option value="">All Suppliers / Parties</option>
+            {parties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
             {([['all', 'All'], ['low', `Low (${stockCounts.low})`], ['out', `Out (${stockCounts.out})`]] as const).map(([f, label]) => (

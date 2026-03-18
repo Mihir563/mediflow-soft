@@ -21,10 +21,10 @@ type Page = 'dashboard' | 'pos' | 'sale' | 'purchase' | 'parties' | 'items' | 'r
 const navItems: { page: Page; label: string; icon: any; shortcut: string; group?: string }[] = [
   { page: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, shortcut: 'Alt+1', group: 'Main' },
   { page: 'pos', label: 'Fast Billing (POS)', icon: Zap, shortcut: 'F2', group: 'Sales' },
-  { page: 'sale', label: 'Sale Invoice', icon: FileText, shortcut: 'Alt+2' },
+  { page: 'sale', label: 'Sale Invoice', icon: FileText, shortcut: 'Alt+2', group: 'Sales' },
   { page: 'purchase', label: 'Purchase Bill', icon: ShoppingCart, shortcut: 'Alt+3', group: 'Purchase' },
   { page: 'parties', label: 'Parties', icon: Users, shortcut: 'Alt+4', group: 'Books' },
-  { page: 'items', label: 'Items', icon: Package, shortcut: 'Alt+5' },
+  { page: 'items', label: 'Items', icon: Package, shortcut: 'Alt+5', group: 'Books' },
   { page: 'reports', label: 'Reports', icon: BarChart3, shortcut: 'Alt+6', group: 'Books' },
   { page: 'settings', label: 'Settings', icon: Settings2, shortcut: 'Alt+7', group: 'System' },
 ];

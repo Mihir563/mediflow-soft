@@ -5,6 +5,9 @@ import { Search, X, FileText, Package, Users } from 'lucide-react';
 
 interface GlobalSearchProps { onNavigate?: (page: string, query?: string) => void; }
 
+const normalizeSql = (column: string) =>
+  `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${column}, ''), ' ', ''), '.', ''), '-', ''), '/', ''), '(', ''), ')', ''))`;
+
 export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -46,19 +49,20 @@ export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
         [...wordLikes, like]
       );
 
-      // Step 2: Fetch last supplier for found items — fast individual queries for top 8
+      // Step 2: Fetch last supplier for found items, falling back to normalized item-name matching
       if (items.length > 0) {
         const supplierPromises = items.map(async (it: any) => {
-          // Hyper-aggressive normalization: remove all spaces and compare lowercase
-          const normalizedName = it.name.replace(/\s+/g, '').toLowerCase();
+          const normalizedName = it.name
+            .toLowerCase()
+            .replace(/[\s./()-]+/g, '');
           const res = await db.select<any[]>(`
             SELECT p.name as supplier 
             FROM transaction_items ti 
             JOIN transactions t ON t.id=ti.txn_id AND t.type='purchase' 
             JOIN parties p ON p.id=t.party_id 
-            WHERE ti.item_id = $1 OR REPLACE(LOWER(ti.item_name), ' ', '') LIKE $2
+            WHERE ti.item_id = $1 OR ${normalizeSql('ti.item_name')} = $2
             ORDER BY t.id DESC LIMIT 1
-          `, [it.id, `%${normalizedName}%`]);
+          `, [it.id, normalizedName]);
           return res.length > 0 ? res[0].supplier : null;
         });
         const suppliers = await Promise.all(supplierPromises);
