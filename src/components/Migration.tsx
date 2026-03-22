@@ -332,6 +332,15 @@ export default function Migration() {
       const finalItems = await db.select<any[]>('SELECT COUNT(*) as cnt FROM items');
       addLog(`Total items in DB after migration: ${finalItems[0]?.cnt}`);
       
+      addLog('Running automated data integrity cleanup...');
+      const repairRes = await db.execute(`
+        UPDATE transaction_items
+        SET item_name = LOWER((SELECT name FROM items WHERE items.id = transaction_items.item_id))
+        WHERE (item_name IS NULL OR item_name = '') 
+          AND item_id IS NOT NULL;
+      `);
+      addLog(`Database repairs complete. Fixed corrupted item names: ${(repairRes as any).rowsAffected || 'done'}`);
+
       setStatus(`✅ Migration complete! Items: ${itemCount}, Parties: ${partyCount}, Purchases: ${purchaseCount}, Sales: ${saleCount}`);
     } catch (error: any) {
       addLog(`FATAL ERROR: ${error.message || JSON.stringify(error)}`);

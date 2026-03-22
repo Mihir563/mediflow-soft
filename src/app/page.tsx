@@ -5,24 +5,28 @@ import FastBilling from '@/components/FastBilling';
 import Dashboard from '@/pages/Dashboard';
 import SaleInvoice from '@/pages/SaleInvoice';
 import PurchaseBill from '@/pages/PurchaseBill';
+import PurchaseHistory from '@/pages/PurchaseHistory';
 import Parties from '@/pages/Parties';
 import Items from '@/pages/Items';
 import Reports from '@/pages/Reports';
 import Settings from '@/pages/Settings';
+import OrderBook from '@/pages/OrderBook';
 import GlobalSearch from '@/components/GlobalSearch';
 import {
   LayoutDashboard, Zap, FileText, ShoppingCart,
   Users, Package, BarChart3, Settings2, ChevronRight,
-  Activity, Keyboard, X
+  Activity, Keyboard, X, Menu, PanelLeftClose, PanelLeftOpen, Bookmark
 } from 'lucide-react';
 
-type Page = 'dashboard' | 'pos' | 'sale' | 'purchase' | 'parties' | 'items' | 'reports' | 'settings';
+type Page = 'dashboard' | 'pos' | 'sale' | 'purchase' | 'purchase_history' | 'parties' | 'items' | 'reports' | 'settings' | 'order_book';
 
 const navItems: { page: Page; label: string; icon: any; shortcut: string; group?: string }[] = [
   { page: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, shortcut: 'Alt+1', group: 'Main' },
   { page: 'pos', label: 'Fast Billing (POS)', icon: Zap, shortcut: 'F2', group: 'Sales' },
   { page: 'sale', label: 'Sale Invoice', icon: FileText, shortcut: 'Alt+2', group: 'Sales' },
   { page: 'purchase', label: 'Purchase Bill', icon: ShoppingCart, shortcut: 'Alt+3', group: 'Purchase' },
+  { page: 'purchase_history', label: 'Purchase History', icon: FileText, shortcut: 'Alt+H', group: 'Purchase' },
+  { page: 'order_book', label: 'Order Book', icon: Bookmark, shortcut: 'Alt+8', group: 'Purchase' },
   { page: 'parties', label: 'Parties', icon: Users, shortcut: 'Alt+4', group: 'Books' },
   { page: 'items', label: 'Items', icon: Package, shortcut: 'Alt+5', group: 'Books' },
   { page: 'reports', label: 'Reports', icon: BarChart3, shortcut: 'Alt+6', group: 'Books' },
@@ -33,6 +37,7 @@ export default function Home() {
   const [page, setPage] = useState<Page>('dashboard');
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const navigate = useCallback((p: Page, query?: string) => {
     setPage(p);
@@ -58,19 +63,34 @@ export default function Home() {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans">
       {/* Sidebar */}
-      <aside className="w-56 flex-shrink-0 flex flex-col bg-sidebar-bg border-r border-sidebar-border-color">
+      <aside className={`flex-shrink-0 flex flex-col bg-sidebar-bg border-r border-sidebar-border-color transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-56'}`}>
         {/* Logo */}
-        <div className="px-4 py-4 border-b border-sidebar-border-color">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-brand flex items-center justify-center">
+        <div className="px-4 py-4 border-b border-sidebar-border-color flex items-center justify-between">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <div className="w-8 h-8 rounded-lg bg-brand flex-shrink-0 flex items-center justify-center">
               <Activity size={16} className="text-white" />
             </div>
-            <div>
-              <p className="text-white font-bold text-sm leading-none">MediFlow</p>
-              <p className="text-slate-400 text-xs mt-0.5">Offline POS</p>
-            </div>
+            {!sidebarCollapsed && (
+              <div className="whitespace-nowrap">
+                <p className="text-white font-bold text-sm leading-none">MediFlow</p>
+                <p className="text-slate-400 text-xs mt-0.5">Offline POS</p>
+              </div>
+            )}
           </div>
+          {!sidebarCollapsed && (
+            <button onClick={() => setSidebarCollapsed(true)} className="text-slate-500 hover:text-white transition-colors">
+              <PanelLeftClose size={16} />
+            </button>
+          )}
         </div>
+
+        {sidebarCollapsed && (
+          <div className="flex justify-center py-3 border-b border-sidebar-border-color">
+            <button onClick={() => setSidebarCollapsed(false)} className="w-8 h-8 rounded-lg text-slate-500 hover:bg-slate-800 hover:text-white flex items-center justify-center transition-colors">
+              <PanelLeftOpen size={16} />
+            </button>
+          </div>
+        )}
 
         {/* Nav */}
         <nav className="flex-1 px-2 py-3 overflow-y-auto space-y-0.5">
@@ -87,17 +107,22 @@ export default function Home() {
                     <button
                       key={item.page}
                       onClick={() => navigate(item.page)}
-                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all group relative ${
+                      className={`w-full flex items-center gap-3 py-2 rounded-lg text-sm transition-all group relative ${sidebarCollapsed ? 'px-0 justify-center' : 'px-3'} ${
                         active
                           ? 'bg-brand text-white font-medium shadow-lg shadow-blue-900/30'
                           : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                       }`}
+                      title={sidebarCollapsed ? `${item.label} (${item.shortcut})` : undefined}
                     >
                       <Icon size={15} className="flex-shrink-0" />
-                      <span className="flex-1 text-left">{item.label}</span>
-                      <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${active ? 'bg-blue-500 text-blue-100' : 'bg-slate-800 text-slate-500 group-hover:bg-slate-700'}`}>
-                        {item.shortcut}
-                      </span>
+                      {!sidebarCollapsed && (
+                        <>
+                          <span className="flex-1 text-left whitespace-nowrap">{item.label}</span>
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded flex-shrink-0 ${active ? 'bg-blue-500 text-blue-100' : 'bg-slate-800 text-slate-500 group-hover:bg-slate-700'}`}>
+                            {item.shortcut}
+                          </span>
+                        </>
+                      )}
                     </button>
                   );
                 })}
@@ -107,13 +132,15 @@ export default function Home() {
         </nav>
 
         {/* Bottom store info */}
-        <div className="px-3 py-3 border-t border-sidebar-border-color">
-          <div className="flex items-center gap-2 px-2 py-2 rounded-lg bg-slate-800">
+        <div className="px-2 py-3 border-t border-sidebar-border-color">
+          <div className={`flex items-center gap-2 px-2 py-2 rounded-lg bg-slate-800 ${sidebarCollapsed ? 'justify-center' : ''}`}>
             <div className="w-7 h-7 rounded-full bg-brand flex-shrink-0 flex items-center justify-center text-white text-xs font-bold">R</div>
-            <div className="overflow-hidden">
-              <p className="text-white text-xs font-medium truncate">Raghuveer Medical</p>
-              <p className="text-slate-400 text-xs truncate">Provision Store</p>
-            </div>
+            {!sidebarCollapsed && (
+              <div className="overflow-hidden whitespace-nowrap">
+                <p className="text-white text-xs font-medium truncate">Raghuveer Medical</p>
+                <p className="text-slate-400 text-xs truncate">Provision Store</p>
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -191,10 +218,12 @@ export default function Home() {
           {page === 'pos' && <FastBilling />}
           {page === 'sale' && <SaleInvoice />}
           {page === 'purchase' && <PurchaseBill />}
+          {page === 'purchase_history' && <PurchaseHistory />}
           {page === 'parties' && <Parties initialSearch={searchQuery} />}
           {page === 'items' && <Items initialSearch={searchQuery} />}
           {page === 'reports' && <Reports initialSearch={searchQuery} />}
           {page === 'settings' && <Settings />}
+          {page === 'order_book' && <OrderBook />}
         </div>
       </main>
     </div>

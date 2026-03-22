@@ -1,10 +1,70 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { getDB } from '@/lib/db';
 import Migration from '@/components/Migration';
-import { Settings2, Database, Info, Share2, Key, Link as LinkIcon } from 'lucide-react';
+import { Settings2, Database, Info, Share2, Key, Link as LinkIcon, LayoutGrid, Save, CheckCircle } from 'lucide-react';
+
+export const defaultSettings = {
+  show_mrp: true,
+  show_stock: true,
+  show_batch: true,
+  show_expiry: true,
+  show_hsn: true,
+  show_tax: true,
+  show_discount: true,
+};
+
+export type AppSettings = typeof defaultSettings;
 
 export default function Settings() {
-  const [tab, setTab] = useState<'migration' | 'general' | 'schema'>('schema');
+  const [tab, setTab] = useState<'migration' | 'general' | 'schema'>('general');
+  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [status, setStatus] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const loadSettings = async () => {
+    try {
+      const db = await getDB();
+      const res = await db.select<{key: string, value: string}[]>('SELECT * FROM app_settings');
+      const loaded = { ...defaultSettings };
+      res.forEach(r => {
+        if (Object.keys(defaultSettings).includes(r.key)) {
+          loaded[r.key as keyof AppSettings] = r.value === 'true';
+        }
+      });
+      setSettings(loaded);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggle = (key: keyof AppSettings) => {
+    setSettings(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const saveSettings = async () => {
+    setStatus('Saving...');
+    try {
+      const db = await getDB();
+      for (const [key, value] of Object.entries(settings)) {
+        await db.execute(
+          `INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2`,
+          [key, String(value)]
+        );
+      }
+      setStatus('✅ Settings saved globally!');
+      setTimeout(() => setStatus(''), 3000);
+    } catch (e) {
+      console.error(e);
+      setStatus('❌ Error saving settings');
+    }
+  };
 
   return (
     <div className="h-full flex flex-col bg-slate-50">
@@ -52,29 +112,77 @@ export default function Settings() {
           </div>
         )}
         {tab === 'general' && (
-          <div className="max-w-xl space-y-5">
-            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-              <h3 className="font-semibold text-slate-700 mb-4">Store Information</h3>
-              <div className="space-y-3">
-                <div><label className="text-xs text-slate-500 font-medium block mb-1">Store Name</label>
-                  <input defaultValue="Raghuveer Medical And Provision Store" className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm" /></div>
-                <div><label className="text-xs text-slate-500 font-medium block mb-1">GSTIN</label>
-                  <input placeholder="24XXXXX..." className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm" /></div>
-                <div><label className="text-xs text-slate-500 font-medium block mb-1">Address</label>
-                  <textarea rows={2} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm" /></div>
-                <div><label className="text-xs text-slate-500 font-medium block mb-1">Phone</label>
-                  <input placeholder="+91..." className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm" /></div>
+          <div className="max-w-4xl space-y-6">
+
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+              <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                   <LayoutGrid size={18} className="text-slate-500" />
+                   <h2 className="font-semibold text-slate-800">Grid Variables Visibility</h2>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="text-sm font-medium h-8 flex items-center text-brand">{status}</div>
+                  <button
+                    onClick={saveSettings}
+                    className="flex items-center gap-2 bg-brand hover:bg-brand-hover text-white px-3 py-1.5 rounded-md text-sm font-medium shadow-sm transition-all"
+                  >
+                    <Save size={14} /> Save Variables
+                  </button>
+                </div>
+              </div>
+              <div className="p-6">
+                <p className="text-sm text-slate-500 mb-6">
+                  Turn off columns you don't need during Sale and Purchase billing to declutter the interface.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {Object.keys(defaultSettings).map((key) => {
+                    const settingKey = key as keyof AppSettings;
+                    return (
+                      <div key={key} className="flex items-center justify-between p-4 rounded-lg border border-slate-100 hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm">
+                        <span className="font-medium text-slate-700 capitalize flex items-center gap-2">
+                           Show {key.replace('show_', '').toUpperCase()}
+                        </span>
+                        <button 
+                          onClick={() => handleToggle(settingKey)}
+                          className={`relative inline-flex h-6 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 ${settings[settingKey] ? 'bg-brand' : 'bg-slate-300'}`}
+                          role="switch"
+                          aria-checked={settings[settingKey]}
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${settings[settingKey] ? 'translate-x-6' : 'translate-x-1'}`}
+                          />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-              <h3 className="font-semibold text-slate-700 mb-4">Keyboard Shortcuts</h3>
-              <div className="space-y-2 text-sm">
-                {[['F2', 'Fast Billing (POS)'], ['Alt+1', 'Dashboard'], ['Alt+2', 'Sale Invoice'], ['Alt+3', 'Purchase Bill'], ['Alt+4', 'Parties'], ['Alt+5', 'Items'], ['Alt+6', 'Reports'], ['Alt+7', 'Settings'], ['Ctrl+N', 'New Item / New Party'], ['Ctrl+S', 'Save current form'], ['Esc', 'Close / Cancel']].map(([key, desc]) => (
-                  <div key={key} className="flex items-center justify-between py-1 border-b border-slate-100 last:border-0">
-                    <span className="text-slate-600">{desc}</span>
-                    <kbd className="bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded text-xs font-mono">{key}</kbd>
-                  </div>
-                ))}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                <h3 className="font-semibold text-slate-700 mb-4">Store Information</h3>
+                <div className="space-y-3">
+                  <div><label className="text-xs text-slate-500 font-medium block mb-1">Store Name</label>
+                    <input defaultValue="Raghuveer Medical And Provision Store" className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm" /></div>
+                  <div><label className="text-xs text-slate-500 font-medium block mb-1">GSTIN</label>
+                    <input placeholder="24XXXXX..." className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm" /></div>
+                  <div><label className="text-xs text-slate-500 font-medium block mb-1">Address</label>
+                    <textarea rows={2} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm" /></div>
+                  <div><label className="text-xs text-slate-500 font-medium block mb-1">Phone</label>
+                    <input placeholder="+91..." className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm" /></div>
+                </div>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                <h3 className="font-semibold text-slate-700 mb-4">Keyboard Shortcuts</h3>
+                <div className="space-y-2 text-sm">
+                  {[['F2', 'Fast Billing (POS)'], ['Alt+1', 'Dashboard'], ['Alt+2', 'Sale Invoice'], ['Alt+3', 'Purchase Bill'], ['Alt+4', 'Parties'], ['Alt+5', 'Items'], ['Alt+6', 'Reports'], ['Alt+7', 'Settings'], ['Ctrl+N', 'New Item / New Party'], ['Ctrl+S', 'Save current form'], ['Esc', 'Close / Cancel']].map(([key, desc]) => (
+                    <div key={key} className="flex items-center justify-between py-1 border-b border-slate-100 last:border-0">
+                      <span className="text-slate-600">{desc}</span>
+                      <kbd className="bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded text-xs font-mono">{key}</kbd>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>

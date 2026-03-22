@@ -17,8 +17,9 @@ export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
+        e.stopPropagation();
         setOpen(true);
         setTimeout(() => inputRef.current?.focus(), 50);
       }

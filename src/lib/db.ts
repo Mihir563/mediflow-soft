@@ -91,6 +91,10 @@ export const initDB = async () => {
   await safeAddColumn(dbInstance, 'transaction_items', 'amount', 'REAL DEFAULT 0');
   await safeAddColumn(dbInstance, 'transaction_items', 'discount_pct', 'REAL DEFAULT 0');
   await safeAddColumn(dbInstance, 'transaction_items', 'tax_pct', 'REAL DEFAULT 0');
+  await safeAddColumn(dbInstance, 'items', 'tabs_per_strip', 'REAL DEFAULT 10');
+  await safeAddColumn(dbInstance, 'items', 'strips_per_box', 'REAL DEFAULT 10');
+  await safeAddColumn(dbInstance, 'order_book', 'status', "TEXT DEFAULT 'pending'");
+  await safeAddColumn(dbInstance, 'order_book', 'ordered_at', "TEXT");
 
   // Party Special Rates
   await dbInstance.execute(`
@@ -105,6 +109,25 @@ export const initDB = async () => {
       UNIQUE(party_id, item_id)
     )
   `);
+
+  // App Settings
+  await dbInstance.execute(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `);
+
+  // Order Book
+  await dbInstance.execute(`
+    CREATE TABLE IF NOT EXISTS order_book (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id INTEGER,
+      item_name TEXT,
+      quantity REAL DEFAULT 1
+    )
+  `);
+
   // Performance indexes for search
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_items_name ON items(name)`);
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_items_hsn ON items(hsn)`);

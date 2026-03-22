@@ -1,8 +1,11 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getDB } from '@/lib/db';
-import { Search, Plus, Trash2, ChevronDown } from 'lucide-react';
+import { Search, Plus, Trash2, ChevronDown, ScanLine } from 'lucide-react';
 import ItemModal from '@/components/ItemModal';
+import ScannerPanel from '@/components/ScannerPanel';
+import QtyCalculatorModal from '@/components/QtyCalculatorModal';
+import { AppSettings, defaultSettings } from '@/pages/Settings';
 
 interface SaleItemOption {
   id: number;
@@ -14,6 +17,8 @@ interface SaleItemOption {
   current_stock?: number;
   discount?: number;
   tax_rate?: number;
+  tabs_per_strip?: number;
+  strips_per_box?: number;
 }
 
 interface SaleRow {
@@ -22,13 +27,16 @@ interface SaleRow {
   name: string;
   hsn: string;
   unit: string;
-  sale_price: number;
-  purchase_price: number;
+  base_unit: string;
+  tabsPerStrip: number | '';
+  stripsPerBox: number | '';
+  sale_price: number | '';
+  purchase_price: number | '';
   current_stock: number;
-  qty: number;
-  price: number;
-  disc: number;
-  tax_rate: number;
+  qty: number | '';
+  price: number | '';
+  disc: number | '';
+  tax_rate: number | '';
   batch: string;
   expiry: string;
 }
@@ -48,7 +56,10 @@ const createEmptyRow = (rowId: number): SaleRow => ({
   itemId: null,
   name: '',
   hsn: '',
-  unit: '',
+  unit: 'TAB',
+  base_unit: 'TAB',
+  tabsPerStrip: 10,
+  stripsPerBox: 10,
   sale_price: 0,
   purchase_price: 0,
   current_stock: 0,
@@ -87,9 +98,14 @@ export default function SaleInvoice() {
   const [itemResults, setItemResults] = useState<SaleItemOption[]>([]);
   const [showItemDrop, setShowItemDrop] = useState(false);
   const [showItemModal, setShowItemModal] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
   const [itemModalName, setItemModalName] = useState('');
   const [activeRowId, setActiveRowId] = useState<number | null>(1);
   const [status, setStatus] = useState('');
+  
+  const [selectedItemIndex, setSelectedItemIndex] = useState(-1);
+  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+
   const rowSeedRef = useRef(DEFAULT_ROW_COUNT + 1);
   const partyInputRef = useRef<HTMLInputElement>(null);
   const itemInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
@@ -99,11 +115,28 @@ export default function SaleInvoice() {
       const db = await getDB();
       const res = await db.select<Array<{ cnt: number }>>(`SELECT COUNT(*) as cnt FROM transactions WHERE type='sale'`);
       const cnt = (res[0]?.cnt || 0) + 1;
-      setInvoiceNo(`INV-${String(cnt).padStart(4, '0')}`);
+      setInvoiceNo(`${cnt}`);
     } catch {
       setInvoiceNo(createFallbackInvoiceNo());
     }
   }
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const db = await getDB();
+        const res = await db.select<{key: string, value: string}[]>('SELECT * FROM app_settings');
+        const loaded = { ...defaultSettings };
+        res.forEach(r => {
+          if (Object.keys(defaultSettings).includes(r.key)) {
+            loaded[r.key as keyof AppSettings] = r.value === 'true';
+          }
+        });
+        setSettings(loaded);
+      } catch (e) {}
+    };
+    loadSettings();
+  }, []);
 
   function focusRowInput(rowId?: number | null) {
     const targetId = rowId ?? cart.find(row => !row.itemId)?.rowId ?? cart[0]?.rowId ?? null;
@@ -156,12 +189,46 @@ export default function SaleInvoice() {
       const params = party ? [`%${q}%`, party.id] : [`%${q}%`];
       const res = await db.select<SaleItemOption[]>(query, params);
       setItemResults(res);
+      setSelectedItemIndex(-1);
       setShowItemDrop(true);
     } catch {}
   };
 
   const updateRow = (rowId: number, field: keyof SaleRow, value: string | number | null) => {
     setCart(prev => prev.map(row => row.rowId === rowId ? { ...row, [field]: value } : row));
+  };
+
+  const getMultiplier = (unit: string, baseUnit: string, tabsPerStrip: number, stripsPerBox: number) => {
+    if (unit === baseUnit) return 1;
+    if (baseUnit === 'TAB') {
+      if (unit === 'STRIP') return tabsPerStrip;
+      if (unit === 'BOX') return tabsPerStrip * stripsPerBox;
+    }
+    if (baseUnit === 'STRIP') {
+      if (unit === 'TAB') return 1 / (tabsPerStrip || 1);
+      if (unit === 'BOX') return stripsPerBox;
+    }
+    if (baseUnit === 'BOX') {
+      if (unit === 'STRIP') return 1 / (stripsPerBox || 1);
+      if (unit === 'TAB') return 1 / ((tabsPerStrip || 1) * (stripsPerBox || 1));
+    }
+    return 1;
+  };
+
+  const handleUnitChange = (rowId: number, newUnit: string) => {
+    setCart(prev => prev.map(row => {
+      if (row.rowId !== rowId) return row;
+      const oldMulti = getMultiplier(row.unit, row.base_unit, Number(row.tabsPerStrip) || 1, Number(row.stripsPerBox) || 1);
+      const newMulti = getMultiplier(newUnit, row.base_unit, Number(row.tabsPerStrip) || 1, Number(row.stripsPerBox) || 1);
+      const scale = newMulti / oldMulti;
+      return {
+        ...row,
+        unit: newUnit,
+        price: Number(((Number(row.price) || 0) * scale).toFixed(2)),
+        sale_price: Number(((Number(row.sale_price) || 0) * scale).toFixed(2)),
+        purchase_price: Number(((Number(row.purchase_price) || 0) * scale).toFixed(2)),
+      };
+    }));
   };
 
   const addEmptyRow = () => {
@@ -176,17 +243,34 @@ export default function SaleInvoice() {
       itemId: item.id,
       name: item.name,
       hsn: item.hsn || '',
-      unit: item.unit || '',
+      unit: item.unit || 'TAB',
+      base_unit: item.unit || 'TAB',
+      tabsPerStrip: Number(item.tabs_per_strip) || 10,
+      stripsPerBox: Number(item.strips_per_box) || 10,
       sale_price: Number(item.sale_price) || 0,
       purchase_price: Number(item.purchase_price) || 0,
       current_stock: Number(item.current_stock) || 0,
-      qty: row.itemId === item.id ? row.qty : 1,
+      qty: 1,
       price: Number(item.sale_price) || 0,
       disc: Number(item.discount) || 0,
       tax_rate: Number(item.tax_rate) || 0,
     } : row));
     setItemResults([]);
     setShowItemDrop(false);
+    
+    setTimeout(() => {
+        setCart(currentCart => {
+            const idx = currentCart.findIndex(r => r.rowId === rowId);
+            if (idx === currentCart.length - 1 && currentCart[idx].itemId) {
+                const newRowId = rowSeedRef.current++;
+                focusRowInput(newRowId);
+                return [...currentCart, createEmptyRow(newRowId)];
+            } else if (idx < currentCart.length - 1) {
+                focusRowInput(currentCart[idx + 1].rowId);
+            }
+            return currentCart;
+        });
+    }, 50);
   };
 
   const clearRow = (rowId: number) => {
@@ -198,12 +282,12 @@ export default function SaleInvoice() {
   };
 
   const validRows = useMemo(() => cart.filter(row => row.itemId && row.name.trim()), [cart]);
-  const subtotal = validRows.reduce((sum, row) => sum + row.price * row.qty, 0);
-  const totalDiscount = validRows.reduce((sum, row) => sum + (row.price * row.qty * (row.disc / 100)), 0);
+  const subtotal = validRows.reduce((sum, row) => sum + (Number(row.price) || 0) * (Number(row.qty) || 0), 0);
+  const totalDiscount = validRows.reduce((sum, row) => sum + ((Number(row.price) || 0) * (Number(row.qty) || 0) * ((Number(row.disc) || 0) / 100)), 0);
   const afterDiscount = subtotal - totalDiscount;
   const totalTax = validRows.reduce((sum, row) => {
-    const base = row.price * row.qty * (1 - row.disc / 100);
-    return sum + base * (row.tax_rate / 100);
+    const base = (Number(row.price) || 0) * (Number(row.qty) || 0) * (1 - (Number(row.disc) || 0) / 100);
+    return sum + base * ((Number(row.tax_rate) || 0) / 100);
   }, 0);
   const net = Math.round(afterDiscount + totalTax);
 
@@ -225,15 +309,24 @@ export default function SaleInvoice() {
       );
       const txnId = Number((res as { lastInsertId?: number }).lastInsertId);
       for (const row of validRows) {
-        const base = row.price * row.qty;
-        const discAmt = base * (row.disc / 100);
-        const taxAmt = (base - discAmt) * (row.tax_rate / 100);
+        const qtyVal = Number(row.qty) || 0;
+        const priceVal = Number(row.price) || 0;
+        const discVal = Number(row.disc) || 0;
+        const taxVal = Number(row.tax_rate) || 0;
+        
+        const base = priceVal * qtyVal;
+        const discAmt = base * (discVal / 100);
+        const taxAmt = (base - discAmt) * (taxVal / 100);
         const amount = base - discAmt + taxAmt;
         await db.execute(
           `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, discount_amt, tax_pct, tax_amt, amount, batch_no, expiry_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [txnId, row.itemId, row.name, row.qty, row.unit, row.price, row.disc, discAmt, row.tax_rate, taxAmt, amount, row.batch || '', row.expiry || '']
+          [txnId, row.itemId, row.name, qtyVal, row.unit, priceVal, discVal, discAmt, taxVal, taxAmt, amount, row.batch || '', row.expiry || '']
         );
-        await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [row.qty, row.itemId]);
+        let inventoryQty = qtyVal;
+        if (row.unit === 'BOX') inventoryQty = qtyVal * (Number(row.stripsPerBox) || 1) * (Number(row.tabsPerStrip) || 1);
+        else if (row.unit === 'STRIP') inventoryQty = qtyVal * (Number(row.tabsPerStrip) || 1);
+
+        await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [inventoryQty, row.itemId]);
       }
       setStatus(`✅ Invoice ${invoiceNo} saved!`);
       setCart(Array.from({ length: DEFAULT_ROW_COUNT }, (_, index) => createEmptyRow(index + 1)));
@@ -292,6 +385,9 @@ export default function SaleInvoice() {
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
         <h2 className="text-xl font-bold text-slate-800">Sale</h2>
         <div className="flex items-center gap-4">
+          <button onClick={() => setShowScanner(true)} className="flex items-center gap-2 text-xs bg-brand/10 text-brand px-3 py-1.5 rounded-lg font-bold hover:bg-brand hover:text-white transition-colors">
+            <ScanLine size={14} /> Mobile Scanner
+          </button>
           <kbd className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded font-mono">F4 = Item Row</kbd>
           <kbd className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded font-mono">Ctrl+S = Save</kbd>
         </div>
@@ -380,29 +476,32 @@ export default function SaleInvoice() {
             <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
               <tr className="text-slate-500 text-[11px] font-bold uppercase tracking-wider">
                 <th className="pl-6 pr-2 py-3 text-left w-10">#</th>
-                <th className="px-2 py-3 text-left w-[300px]">Item / Description</th>
-                <th className="px-2 py-3 text-left w-28">Batch No.</th>
-                <th className="px-2 py-3 text-left w-28">Exp. Date</th>
-                <th className="px-2 py-3 text-right w-20">MRP</th>
-                <th className="px-2 py-3 text-right w-16">Stock</th>
+                <th className="px-2 py-3 text-left w-[240px]">Item / Description</th>
+                {settings.show_mrp && <th className="px-2 py-3 text-right w-20">MRP</th>}
+                {settings.show_stock && <th className="px-2 py-3 text-right w-16">Stock</th>}
                 <th className="px-2 py-3 text-right w-20">Qty</th>
-                <th className="px-2 py-3 text-left w-16">Unit</th>
-                <th className="px-2 py-3 text-right w-24">Price/Unit</th>
-                <th className="px-2 py-3 text-right w-20">Disc%</th>
-                <th className="px-2 py-3 text-right w-20">Tax%</th>
+                <th className="px-2 py-3 text-left w-24">Unit</th>
+                <th className="px-2 py-3 text-right w-24">Price</th>
+                {settings.show_discount && <th className="px-2 py-3 text-right w-20">Disc%</th>}
+                {settings.show_tax && <th className="px-2 py-3 text-right w-20">Tax%</th>}
                 <th className="px-2 py-3 text-right w-24">Amount</th>
                 <th className="pr-6 pl-2 py-3 w-12"></th>
               </tr>
             </thead>
             <tbody>
               {cart.map((row, idx) => {
-                const base = row.price * row.qty;
-                const discAmt = base * (row.disc / 100);
-                const taxAmt = (base - discAmt) * (row.tax_rate / 100);
+                const qtyVal = Number(row.qty) || 0;
+                const priceVal = Number(row.price) || 0;
+                const discVal = Number(row.disc) || 0;
+                const taxVal = Number(row.tax_rate) || 0;
+                const base = priceVal * qtyVal;
+                const discAmt = base * (discVal / 100);
+                const taxAmt = (base - discAmt) * (taxVal / 100);
                 const amount = row.itemId ? base - discAmt + taxAmt : 0;
 
                 return (
-                  <tr key={row.rowId} className="border-b border-slate-100 hover:bg-slate-50/70">
+                  <React.Fragment key={row.rowId}>
+                    <tr className="border-b border-light hover:bg-slate-50/70">
                     <td className="pl-6 pr-2 py-2 text-slate-400 font-mono text-xs align-top">{idx + 1}</td>
                     <td className="px-2 py-2 align-top">
                       <div className="relative">
@@ -413,11 +512,35 @@ export default function SaleInvoice() {
                             setActiveRowId(row.rowId);
                             if (row.name.trim()) setShowItemDrop(true);
                           }}
+                          onKeyDown={(e) => {
+                            if (activeRowId === row.rowId && showItemDrop && itemResults.length > 0) {
+                              if (e.key === 'ArrowDown') {
+                                e.preventDefault();
+                                setSelectedItemIndex(prev => (prev < itemResults.length - 1 ? prev + 1 : prev));
+                              } else if (e.key === 'ArrowUp') {
+                                e.preventDefault();
+                                setSelectedItemIndex(prev => (prev > 0 ? prev - 1 : 0));
+                              } else if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (selectedItemIndex >= 0 && selectedItemIndex < itemResults.length) {
+                                  applyItemToRow(row.rowId, itemResults[selectedItemIndex]);
+                                } else if (itemResults.length > 0) {
+                                  applyItemToRow(row.rowId, itemResults[0]);
+                                }
+                              } else if (e.key === 'Escape') {
+                                setShowItemDrop(false);
+                              }
+                            } else if (e.key === 'Enter' && !showItemDrop) {
+                                // If they hit enter on a completed row, jump to next row
+                                const nextIdx = cart.findIndex(r => r.rowId === row.rowId) + 1;
+                                if (nextIdx < cart.length) focusRowInput(cart[nextIdx].rowId);
+                                else addEmptyRow();
+                            }
+                          }}
                           onChange={e => searchItems(row.rowId, e.target.value)}
                           placeholder="Type item name"
                           className="w-full h-10 border border-slate-200 rounded-lg px-3 bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                         />
-                        <div className="mt-1 text-[10px] text-slate-400">HSN: {row.hsn || '—'}</div>
                         {activeRowId === row.rowId && showItemDrop && row.name.trim() && (
                           <div className="absolute left-0 top-[calc(100%+6px)] z-40 w-[460px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl ring-1 ring-black/5">
                             <div className="flex bg-slate-50/80 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-100 backdrop-blur-sm">
@@ -427,12 +550,16 @@ export default function SaleInvoice() {
                               <span className="w-16 text-right">Tax</span>
                             </div>
                             <div className="max-h-[280px] overflow-y-auto p-1.5 scrollbar-thin">
-                              {itemResults.length > 0 ? itemResults.map(item => (
+                              {itemResults.length > 0 ? itemResults.map((item, iIndex) => (
                                 <button
                                   key={item.id}
                                   onMouseDown={e => e.preventDefault()}
-                                  onClick={() => applyItemToRow(row.rowId, item)}
-                                  className="flex w-full items-center px-3 py-3 text-left rounded-lg hover:bg-blue-50/80 group transition-all"
+                                  onClick={() => {
+                                      applyItemToRow(row.rowId, item);
+                                  }}
+                                  className={`flex w-full items-center px-3 py-3 text-left rounded-lg group transition-all ${
+                                    selectedItemIndex === iIndex ? 'bg-blue-100 ring-2 ring-brand ring-inset' : 'hover:bg-blue-50/80'
+                                  }`}
                                 >
                                   <span className="flex-1 truncate font-semibold text-slate-700 group-hover:text-blue-700">{item.name}</span>
                                   <div className="w-16 text-right">
@@ -473,69 +600,70 @@ export default function SaleInvoice() {
                         )}
                       </div>
                     </td>
+                    {settings.show_mrp && (
+                      <td className="px-2 py-2 align-top text-right font-mono text-slate-600">
+                        <div className="h-10 flex items-center justify-end">₹{row.sale_price || 0}</div>
+                      </td>
+                    )}
+                    {settings.show_stock && (
+                      <td className="px-2 py-2 align-top text-right text-slate-500">
+                        <div className="h-10 flex items-center justify-end">{row.current_stock || 0}</div>
+                      </td>
+                    )}
                     <td className="px-2 py-2 align-top">
                       <input
-                        value={row.batch}
-                        onChange={e => updateRow(row.rowId, 'batch', e.target.value)}
-                        className="w-full h-10 border border-slate-200 rounded-lg px-3 bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        type="text"
+                        value={row.qty}
+                        onChange={e => {
+                          const val = e.target.value;
+                          updateRow(row.rowId, 'qty', val === '' ? '' : Number(val));
+                        }}
+                        className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
                     <td className="px-2 py-2 align-top">
-                      <input
-                        value={row.expiry}
-                        onFocus={() => setActiveRowId(row.rowId)}
-                        onChange={e => updateRow(row.rowId, 'expiry', e.target.value)}
-                        onBlur={e => updateRow(row.rowId, 'expiry', formatExpiryInput(e.target.value))}
-                        placeholder="DD-MM-YYYY"
-                        className="w-full h-10 border border-slate-200 rounded-lg px-3 bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
-                      />
-                    </td>
-                    <td className="px-2 py-2 align-top text-right font-mono text-slate-600">
-                      <div className="h-10 flex items-center justify-end">₹{row.sale_price || 0}</div>
-                    </td>
-                    <td className="px-2 py-2 align-top text-right text-slate-500">
-                      <div className="h-10 flex items-center justify-end">{row.current_stock || 0}</div>
+                      <select
+                        value={row.unit || 'TAB'}
+                        onChange={e => handleUnitChange(row.rowId, e.target.value)}
+                        className="w-full h-10 border border-slate-200 rounded-lg px-2 bg-slate-50 text-xs font-bold text-slate-600 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                      >
+                        <option value="BOX">BOX</option>
+                        <option value="STRIP">STRIP</option>
+                        <option value="TAB">TAB</option>
+                        <option value="PCS">PCS</option>
+                        <option value="BTL">BTL</option>
+                      </select>
                     </td>
                     <td className="px-2 py-2 align-top">
                       <input
-                        type="number"
-                        min={1}
-                        value={row.qty || ''}
-                        onChange={e => updateRow(row.rowId, 'qty', Math.max(1, Number(e.target.value) || 1))}
+                        type="text"
+                        value={row.price}
+                        onChange={e => {
+                          const val = e.target.value;
+                          updateRow(row.rowId, 'price', val === '' ? '' : Number(val));
+                        }}
                         className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
                     <td className="px-2 py-2 align-top">
                       <input
-                        value={row.unit || ''}
-                        onChange={e => updateRow(row.rowId, 'unit', e.target.value)}
-                        className="w-full h-10 border border-slate-200 rounded-lg px-3 uppercase bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
-                      />
-                    </td>
-                    <td className="px-2 py-2 align-top">
-                      <input
-                        type="number"
-                        value={row.price || ''}
-                        onChange={e => updateRow(row.rowId, 'price', Number(e.target.value) || 0)}
+                        type="text"
+                        value={row.disc}
+                        onChange={e => {
+                          const val = e.target.value;
+                          updateRow(row.rowId, 'disc', val === '' ? '' : Number(val));
+                        }}
                         className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
                     <td className="px-2 py-2 align-top">
                       <input
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={row.disc || ''}
-                        onChange={e => updateRow(row.rowId, 'disc', Number(e.target.value) || 0)}
-                        className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
-                      />
-                    </td>
-                    <td className="px-2 py-2 align-top">
-                      <input
-                        type="number"
-                        min={0}
-                        value={row.tax_rate || ''}
-                        onChange={e => updateRow(row.rowId, 'tax_rate', Number(e.target.value) || 0)}
+                        type="text"
+                        value={row.tax_rate}
+                        onChange={e => {
+                          const val = e.target.value;
+                          updateRow(row.rowId, 'tax_rate', val === '' ? '' : Number(val));
+                        }}
                         className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
@@ -551,29 +679,30 @@ export default function SaleInvoice() {
                       </button>
                     </td>
                   </tr>
-                );
-              })}
+                </React.Fragment>
+              );
+            })}
             </tbody>
             <tfoot className="bg-slate-50 border-t border-b border-slate-200 sticky bottom-0 z-10">
               <tr>
-                <td colSpan={6} className="px-6 py-3 font-medium text-slate-600">Total</td>
-                <td className="px-2 py-3 text-right font-bold text-slate-700 font-mono">{validRows.reduce((sum, row) => sum + row.qty, 0)}</td>
+                <td colSpan={6} className="px-6 py-2">
+                  <div className="flex items-center gap-4">
+                    <button
+                      onClick={addEmptyRow}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-brand"
+                    >
+                      <Plus size={14} /> Add Row
+                    </button>
+                    <span className="font-medium text-slate-600">Total</span>
+                  </div>
+                </td>
+                <td className="px-2 py-3 text-right font-bold text-slate-700 font-mono">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
                 <td colSpan={4}></td>
                 <td className="px-2 py-3 text-right font-bold text-slate-800 font-mono">{net.toFixed(2)}</td>
                 <td></td>
               </tr>
             </tfoot>
           </table>
-        </div>
-
-        <div className="flex items-center justify-between border-t border-slate-100 px-6 py-3">
-          <p className="text-sm text-slate-500">Five rows are ready by default. Add more only when needed.</p>
-          <button
-            onClick={addEmptyRow}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            <Plus size={16} /> Add Row
-          </button>
         </div>
 
         <div className="bg-slate-50 border-t border-slate-200 p-6 flex justify-between shrink-0">
@@ -659,6 +788,49 @@ export default function SaleInvoice() {
           </div>
         </div>
       </div>
+      {showScanner && (
+        <ScannerPanel 
+          onClose={() => setShowScanner(false)} 
+          onAutoFill={(items) => {
+            const newCart = [...cart];
+            let targetIdx = newCart.findIndex(r => !r.itemId);
+            if (targetIdx === -1) targetIdx = newCart.length;
+            
+            items.forEach((it, i) => {
+              const rowId = rowSeedRef.current++;
+              const insertIdx = targetIdx + i;
+              const row = {
+                rowId,
+                itemId: it.id,
+                name: it.name,
+                hsn: it.hsn || '',
+                unit: it.unit || 'TAB',
+                base_unit: it.unit || 'TAB',
+                tabsPerStrip: 10,
+                stripsPerBox: 10,
+                sale_price: Number(it.sale_price) || 0,
+                purchase_price: Number(it.purchase_price) || 0,
+                current_stock: Number(it.current_stock) || 0,
+                qty: it.qty_extracted || 1,
+                price: Number(it.sale_price) || 0,
+                disc: 0,
+                tax_rate: Number(it.tax_rate) || 0,
+                batch: '',
+                expiry: ''
+              };
+              if (insertIdx < newCart.length && !newCart[insertIdx].itemId) {
+                 newCart[insertIdx] = row;
+                 newCart[insertIdx].rowId = cart[insertIdx].rowId; // keep original rowId
+                 rowSeedRef.current--; // refund seed
+              } else {
+                 newCart.splice(insertIdx, 0, row);
+              }
+            });
+            setCart(newCart);
+            setShowScanner(false);
+          }}
+        />
+      )}
     </div>
   );
 }
