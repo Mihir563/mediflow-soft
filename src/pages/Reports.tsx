@@ -168,7 +168,7 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
                 <tr key={i} className="border-b border-slate-100 hover:bg-white transition-colors">
                   {(reportType === 'sale' || reportType === 'purchase') && (
                     <>
-                      <td className="pl-6 py-3 text-slate-500 text-sm whitespace-nowrap">{row.date?.split('T')[0]}</td>
+                      <td className="pl-6 py-3 text-slate-500 text-sm whitespace-nowrap">{row.date ? new Date(row.date).toLocaleDateString('en-GB') : ''}</td>
                       <td className="px-2 py-3 font-mono text-xs text-brand">{row.invoice_no || `#${row.id}`}</td>
                       <td className="px-2 py-3">
                         <p className="font-semibold text-slate-800">{row.party_name || 'Walk-in'}</p>

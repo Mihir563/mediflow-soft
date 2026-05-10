@@ -144,7 +144,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                         {txn.type}
                       </span>
                     </td>
-                    <td className="py-2.5 text-slate-500 text-xs">{txn.date?.split('T')[0]}</td>
+                    <td className="py-2.5 text-slate-500 text-xs">{txn.date ? new Date(txn.date).toLocaleDateString('en-GB') : ''}</td>
                     <td className="py-2.5 text-right font-semibold text-slate-800">₹{txn.total_amount?.toFixed(2)}</td>
                   </tr>
                 ))}

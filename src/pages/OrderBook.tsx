@@ -284,7 +284,12 @@ export default function OrderBook() {
 
     // Direct WhatsApp send
     await openWhatsAppUrl(vendorPhone, activeTab, items);
-    markVendorAsOrdered(activeTab);
+    
+    setTimeout(() => {
+      if (window.confirm(`Did the WhatsApp message to ${activeTab} send successfully?\n\nClick OK to mark these items as 'Ordered'.\nClick Cancel if the number does not have WhatsApp or failed.`)) {
+        markVendorAsOrdered(activeTab);
+      }
+    }, 1500);
   };
 
   const handleSavePhoneAndOrder = async () => {
@@ -302,8 +307,13 @@ export default function OrderBook() {
 
     // Proceed to open WhatsApp & Mark Ordered
     await openWhatsAppUrl(phoneInput, activeTab, activeVendorPending);
-    markVendorAsOrdered(activeTab);
     setShowPhoneModal(false);
+    
+    setTimeout(() => {
+      if (window.confirm(`Did the WhatsApp message to ${activeTab} send successfully?\n\nClick OK to mark these items as 'Ordered'.\nClick Cancel if the number does not have WhatsApp or failed.`)) {
+        markVendorAsOrdered(activeTab);
+      }
+    }, 1500);
   };
 
 
@@ -453,7 +463,7 @@ export default function OrderBook() {
                                    </thead>
                                    <tbody>
                                      {items.map((item, idx) => {
-                                        const dateStr = item.ordered_at ? new Date(item.ordered_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown';
+                                        const dateStr = item.ordered_at ? new Date(item.ordered_at).toLocaleDateString('en-GB', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown';
                                         return (
                                            <tr key={item.id} className={`${idx !== items.length - 1 ? 'border-b border-slate-50' : ''} bg-white opacity-80 cursor-default hover:opacity-100 transition-opacity`}>
                                              <td className="px-5 py-3 font-semibold text-slate-800 break-words">{item.item_name}</td>

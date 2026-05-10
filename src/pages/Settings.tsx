@@ -2,7 +2,15 @@
 import { useState, useEffect } from 'react';
 import { getDB } from '@/lib/db';
 import Migration from '@/components/Migration';
-import { Settings2, Database, Info, Share2, Key, Link as LinkIcon, LayoutGrid, Save, CheckCircle } from 'lucide-react';
+import {
+  loadMongoConfig, saveMongoConfig, pushToCloud, pullFromCloud,
+  getCloudStats, getLocalStats, MongoConfig, SyncProgress
+} from '@/lib/cloudSync';
+import {
+  Settings2, Database, Info, Share2, Key, Link as LinkIcon,
+  LayoutGrid, Save, CheckCircle, Cloud, CloudUpload, CloudDownload,
+  RefreshCw, AlertTriangle, Loader2, CheckCircle2, HardDrive
+} from 'lucide-react';
 
 export const defaultSettings = {
   show_mrp: true,
@@ -17,13 +25,27 @@ export const defaultSettings = {
 export type AppSettings = typeof defaultSettings;
 
 export default function Settings() {
-  const [tab, setTab] = useState<'migration' | 'general' | 'schema'>('general');
+  const [tab, setTab] = useState<'migration' | 'general' | 'schema' | 'cloud'>('general');
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // Cloud backup state
+  const [mongoConfig, setMongoConfig] = useState<MongoConfig>({
+    apiKey: '', appId: '', cluster: 'Cluster0', database: 'mediflow_backup',
+  });
+  const [cloudConfigLoaded, setCloudConfigLoaded] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<SyncProgress>({ phase: 'idle', message: '' });
+  const [localStats, setLocalStats] = useState<Record<string, number>>({});
+  const [cloudStats, setCloudStats] = useState<Record<string, number>>({});
+  const [lastPush, setLastPush] = useState<string | null>(null);
+  const [lastPull, setLastPull] = useState<string | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [configSaved, setConfigSaved] = useState(false);
+
   useEffect(() => {
     loadSettings();
+    loadCloudConfig();
   }, []);
 
   const loadSettings = async () => {
@@ -66,17 +88,88 @@ export default function Settings() {
     }
   };
 
+  // ─── Cloud Backup Logic ───────────────────────
+  const loadCloudConfig = async () => {
+    const cfg = await loadMongoConfig();
+    if (cfg) setMongoConfig(cfg);
+    setCloudConfigLoaded(true);
+
+    // Load timestamps
+    try {
+      const db = await getDB();
+      const pushTs = await db.select<{value:string}[]>(`SELECT value FROM app_settings WHERE key='mongo_last_push'`);
+      const pullTs = await db.select<{value:string}[]>(`SELECT value FROM app_settings WHERE key='mongo_last_pull'`);
+      if (pushTs.length > 0) setLastPush(pushTs[0].value);
+      if (pullTs.length > 0) setLastPull(pullTs[0].value);
+    } catch {}
+  };
+
+  const handleSaveConfig = async () => {
+    await saveMongoConfig(mongoConfig);
+    setConfigSaved(true);
+    setTimeout(() => setConfigSaved(false), 3000);
+  };
+
+  const handleRefreshStats = async () => {
+    setStatsLoading(true);
+    try {
+      const local = await getLocalStats();
+      setLocalStats(local);
+      if (mongoConfig.apiKey && mongoConfig.appId) {
+        const cloud = await getCloudStats(mongoConfig);
+        setCloudStats(cloud);
+      }
+    } catch (e: any) {
+      console.error('Stats error:', e);
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  const handlePush = async () => {
+    if (!mongoConfig.apiKey || !mongoConfig.appId) {
+      alert('Please configure your MongoDB API Key and App ID first.');
+      return;
+    }
+    if (!window.confirm('This will OVERWRITE all data in the cloud with your current local data.\n\nAre you sure?')) return;
+    try {
+      await pushToCloud(mongoConfig, setSyncProgress);
+      loadCloudConfig(); // refresh timestamps
+      handleRefreshStats();
+    } catch (e: any) {
+      setSyncProgress({ phase: 'error', message: `❌ Push failed: ${e.message}` });
+    }
+  };
+
+  const handlePull = async () => {
+    if (!mongoConfig.apiKey || !mongoConfig.appId) {
+      alert('Please configure your MongoDB API Key and App ID first.');
+      return;
+    }
+    if (!window.confirm('⚠️ WARNING: This will DELETE all your local data and replace it with the cloud backup.\n\nThis action cannot be undone. Are you absolutely sure?')) return;
+    try {
+      await pullFromCloud(mongoConfig, setSyncProgress);
+      loadCloudConfig();
+      handleRefreshStats();
+    } catch (e: any) {
+      setSyncProgress({ phase: 'error', message: `❌ Pull failed: ${e.message}` });
+    }
+  };
+
   return (
     <div className="h-full flex flex-col bg-slate-50">
       <div className="px-6 py-3 bg-white border-b border-slate-200 flex gap-2">
+        <button onClick={() => setTab('general')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === 'general' ? 'bg-brand text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+          <Settings2 size={14} className="inline mr-2" />General
+        </button>
+        <button onClick={() => { setTab('cloud'); handleRefreshStats(); }} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === 'cloud' ? 'bg-brand text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+          <Cloud size={14} className="inline mr-2" />Cloud Backup
+        </button>
         <button onClick={() => setTab('schema')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === 'schema' ? 'bg-brand text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
           <Share2 size={14} className="inline mr-2" />Database Schema
         </button>
         <button onClick={() => setTab('migration')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === 'migration' ? 'bg-brand text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
           <Database size={14} className="inline mr-2" />Data Migration
-        </button>
-        <button onClick={() => setTab('general')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === 'general' ? 'bg-brand text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-          <Settings2 size={14} className="inline mr-2" />General
         </button>
       </div>
       <div className="flex-1 overflow-y-auto p-6">
@@ -273,6 +366,227 @@ export default function Settings() {
               </div>
 
             </div>
+          </div>
+        )}
+        {tab === 'cloud' && (
+          <div className="max-w-4xl space-y-6">
+
+            {/* MongoDB Connection Config */}
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+              <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Cloud size={18} className="text-emerald-600" />
+                  <h2 className="font-semibold text-slate-800">MongoDB Atlas Connection</h2>
+                </div>
+                <div className="flex items-center gap-3">
+                  {configSaved && <span className="text-sm text-emerald-600 font-medium flex items-center gap-1"><CheckCircle2 size={14} /> Saved!</span>}
+                  <button onClick={handleSaveConfig} className="flex items-center gap-2 bg-brand hover:bg-brand-hover text-white px-3 py-1.5 rounded-md text-sm font-medium shadow-sm transition-all">
+                    <Save size={14} /> Save Config
+                  </button>
+                </div>
+              </div>
+              <div className="p-6">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-6 flex gap-2">
+                  <AlertTriangle size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-amber-900">
+                    <p className="font-semibold mb-1">How to get your MongoDB API credentials</p>
+                    <ol className="list-decimal list-inside space-y-1 text-xs text-amber-800">
+                      <li>Go to <strong>cloud.mongodb.com</strong> → create a free cluster</li>
+                      <li>Click <strong>Data API</strong> in the sidebar → Enable it</li>
+                      <li>Create an <strong>API Key</strong> and copy it below</li>
+                      <li>Copy your <strong>App ID</strong> (shown on the Data API page)</li>
+                    </ol>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs text-slate-500 font-semibold block mb-1.5">API Key *</label>
+                    <input
+                      type="password"
+                      value={mongoConfig.apiKey}
+                      onChange={e => setMongoConfig(prev => ({ ...prev, apiKey: e.target.value }))}
+                      placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                      className="w-full h-10 border border-slate-200 rounded-lg px-3 text-sm font-mono focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 font-semibold block mb-1.5">App ID *</label>
+                    <input
+                      type="text"
+                      value={mongoConfig.appId}
+                      onChange={e => setMongoConfig(prev => ({ ...prev, appId: e.target.value }))}
+                      placeholder="data-xxxxx"
+                      className="w-full h-10 border border-slate-200 rounded-lg px-3 text-sm font-mono focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 font-semibold block mb-1.5">Cluster Name</label>
+                    <input
+                      type="text"
+                      value={mongoConfig.cluster}
+                      onChange={e => setMongoConfig(prev => ({ ...prev, cluster: e.target.value }))}
+                      placeholder="Cluster0"
+                      className="w-full h-10 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 font-semibold block mb-1.5">Database Name</label>
+                    <input
+                      type="text"
+                      value={mongoConfig.database}
+                      onChange={e => setMongoConfig(prev => ({ ...prev, database: e.target.value }))}
+                      placeholder="mediflow_backup"
+                      className="w-full h-10 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Sync Actions */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Push */}
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                <div className="px-6 py-4 border-b border-slate-100 bg-emerald-50">
+                  <div className="flex items-center gap-2">
+                    <CloudUpload size={18} className="text-emerald-600" />
+                    <h3 className="font-semibold text-emerald-800">Push to Cloud</h3>
+                  </div>
+                  <p className="text-xs text-emerald-700 mt-1">Overwrites cloud data with your current local database.</p>
+                </div>
+                <div className="p-6">
+                  {lastPush && (
+                    <p className="text-xs text-slate-500 mb-3">Last pushed: <strong className="text-slate-700">{new Date(lastPush).toLocaleString('en-GB')}</strong></p>
+                  )}
+                  <button
+                    onClick={handlePush}
+                    disabled={syncProgress.phase !== 'idle' && syncProgress.phase !== 'done' && syncProgress.phase !== 'error'}
+                    className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-lg font-bold text-sm transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <CloudUpload size={16} /> Push Local → Cloud
+                  </button>
+                </div>
+              </div>
+
+              {/* Pull */}
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                <div className="px-6 py-4 border-b border-slate-100 bg-blue-50">
+                  <div className="flex items-center gap-2">
+                    <CloudDownload size={18} className="text-blue-600" />
+                    <h3 className="font-semibold text-blue-800">Restore from Cloud</h3>
+                  </div>
+                  <p className="text-xs text-blue-700 mt-1">Replaces local data with the cloud backup. Destructive!</p>
+                </div>
+                <div className="p-6">
+                  {lastPull && (
+                    <p className="text-xs text-slate-500 mb-3">Last restored: <strong className="text-slate-700">{new Date(lastPull).toLocaleString('en-GB')}</strong></p>
+                  )}
+                  <button
+                    onClick={handlePull}
+                    disabled={syncProgress.phase !== 'idle' && syncProgress.phase !== 'done' && syncProgress.phase !== 'error'}
+                    className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold text-sm transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <CloudDownload size={16} /> Restore Cloud → Local
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Progress Bar */}
+            {syncProgress.phase !== 'idle' && (
+              <div className={`rounded-xl border overflow-hidden shadow-sm ${
+                syncProgress.phase === 'error' ? 'bg-red-50 border-red-200' :
+                syncProgress.phase === 'done' ? 'bg-emerald-50 border-emerald-200' :
+                'bg-white border-slate-200'
+              }`}>
+                <div className="px-6 py-4 flex items-center gap-3">
+                  {syncProgress.phase === 'done' ? (
+                    <CheckCircle2 size={20} className="text-emerald-600" />
+                  ) : syncProgress.phase === 'error' ? (
+                    <AlertTriangle size={20} className="text-red-600" />
+                  ) : (
+                    <Loader2 size={20} className="text-brand animate-spin" />
+                  )}
+                  <div className="flex-1">
+                    <p className={`text-sm font-medium ${
+                      syncProgress.phase === 'error' ? 'text-red-700' :
+                      syncProgress.phase === 'done' ? 'text-emerald-700' :
+                      'text-slate-700'
+                    }`}>
+                      {syncProgress.message}
+                    </p>
+                    {syncProgress.tableIndex && syncProgress.totalTables && syncProgress.phase !== 'done' && syncProgress.phase !== 'error' && (
+                      <div className="mt-2 w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                        <div
+                          className="bg-brand h-full rounded-full transition-all duration-300"
+                          style={{ width: `${(syncProgress.tableIndex / syncProgress.totalTables) * 100}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Stats Comparison */}
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+              <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Database size={18} className="text-slate-500" />
+                  <h2 className="font-semibold text-slate-800">Data Comparison</h2>
+                </div>
+                <button
+                  onClick={handleRefreshStats}
+                  disabled={statsLoading}
+                  className="flex items-center gap-1.5 text-xs font-medium text-brand hover:text-brand-hover transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={statsLoading ? 'animate-spin' : ''} /> Refresh
+                </button>
+              </div>
+              <div className="p-0">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-400 text-xs uppercase tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="px-6 py-3 text-left font-semibold">Table</th>
+                      <th className="px-6 py-3 text-right font-semibold">
+                        <span className="flex items-center justify-end gap-1.5"><HardDrive size={12} /> Local</span>
+                      </th>
+                      <th className="px-6 py-3 text-right font-semibold">
+                        <span className="flex items-center justify-end gap-1.5"><Cloud size={12} /> Cloud</span>
+                      </th>
+                      <th className="px-6 py-3 text-center font-semibold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {['items', 'parties', 'transactions', 'transaction_items', 'order_book', 'party_special_rates', 'app_settings'].map((table, idx) => {
+                      const local = localStats[table] ?? '—';
+                      const cloud = cloudStats[table] ?? '—';
+                      const synced = typeof local === 'number' && typeof cloud === 'number' && local === cloud;
+                      const hasCloud = typeof cloud === 'number' && cloud > 0;
+                      return (
+                        <tr key={table} className={`border-b border-slate-50 ${idx % 2 === 0 ? '' : 'bg-slate-50/50'}`}>
+                          <td className="px-6 py-3 font-mono text-xs font-semibold text-slate-700">{table}</td>
+                          <td className="px-6 py-3 text-right font-mono font-bold text-slate-800">{local}</td>
+                          <td className="px-6 py-3 text-right font-mono font-bold text-slate-800">{cloud}</td>
+                          <td className="px-6 py-3 text-center">
+                            {statsLoading ? (
+                              <Loader2 size={14} className="text-slate-300 animate-spin mx-auto" />
+                            ) : synced ? (
+                              <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">✓ Synced</span>
+                            ) : hasCloud ? (
+                              <span className="text-xs font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded-full">⚠ Differs</span>
+                            ) : (
+                              <span className="text-xs font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded-full">No cloud</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
           </div>
         )}
       </div>

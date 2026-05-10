@@ -95,7 +95,7 @@ export default function PurchaseHistory() {
                   </div>
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-500 truncate">{row.party_name || 'Cash Purchase'}</span>
-                    <span className="text-slate-400 font-mono">{new Date(row.date).toLocaleDateString()}</span>
+                    <span className="text-slate-400 font-mono">{new Date(row.date).toLocaleDateString('en-GB')}</span>
                   </div>
                 </button>
               ))}
@@ -115,7 +115,7 @@ export default function PurchaseHistory() {
             </div>
             <div className="text-right">
               <span className="inline-flex items-center px-2 py-1 rounded bg-slate-100 text-slate-600 text-xs font-bold font-mono">
-                {new Date(selectedTxn.date).toLocaleString()}
+                {new Date(selectedTxn.date).toLocaleString('en-GB')}
               </span>
             </div>
           </div>

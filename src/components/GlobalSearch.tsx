@@ -204,7 +204,7 @@ export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
                       </div>
                       <div className="flex-1">
                         <p className="font-medium text-slate-800 font-mono">{t.invoice_no || `#${t.id}`}</p>
-                        <p className="text-xs text-slate-400">{t.party_name || 'Walk-in'} • {t.date?.split('T')[0]}</p>
+                        <p className="text-xs text-slate-400">{t.party_name || 'Walk-in'} • {t.date ? new Date(t.date).toLocaleDateString('en-GB') : ''}</p>
                         {t.matched_batch && <p className="text-[10px] text-brand font-medium mt-0.5">Matched Batch: {t.matched_batch}</p>}
                       </div>
                       <div className="text-right flex-shrink-0">

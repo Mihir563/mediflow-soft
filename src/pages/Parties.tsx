@@ -245,7 +245,7 @@ export default function Parties({ initialSearch = '' }: { initialSearch?: string
                     ₹{Math.abs(netBalance).toFixed(2)}
                   </p>
                   <p className="text-xs text-slate-400">{netBalance >= 0 ? 'they owe you' : 'you owe them'}</p>
-                  {stats.lastDate && <p className="text-xs text-slate-400 mt-1">Last: {stats.lastDate.split('T')[0]}</p>}
+                  {stats.lastDate && <p className="text-xs text-slate-400 mt-1">Last: {new Date(stats.lastDate).toLocaleDateString('en-GB')}</p>}
                 </div>
               </div>
             </div>
@@ -301,7 +301,7 @@ export default function Parties({ initialSearch = '' }: { initialSearch?: string
                             </span>
                             {t.payment_type && <span className="block text-[10px] text-slate-400 mt-1 uppercase leading-none">{t.payment_type}</span>}
                           </td>
-                          <td className="px-2 py-2.5 text-slate-500 text-xs">{t.date?.split('T')[0]}</td>
+                          <td className="px-2 py-2.5 text-slate-500 text-xs">{t.date ? new Date(t.date).toLocaleDateString('en-GB') : ''}</td>
                           <td className="px-2 py-2.5 text-xs text-slate-400">{t.item_count} items</td>
                           <td className="px-2 py-2.5 text-right font-semibold font-mono">
                             ₹{t.total_amount?.toFixed(2)}

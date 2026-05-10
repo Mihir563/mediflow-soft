@@ -1,10 +1,11 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getDB } from '@/lib/db';
-import { Search, Plus, Trash2, ChevronDown, ScanLine } from 'lucide-react';
+import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle } from 'lucide-react';
 import ItemModal from '@/components/ItemModal';
 import ScannerPanel from '@/components/ScannerPanel';
 import QtyCalculatorModal from '@/components/QtyCalculatorModal';
+import BatchModal from '@/components/BatchModal';
 import { AppSettings, defaultSettings } from '@/pages/Settings';
 
 interface VendorOption {
@@ -35,6 +36,7 @@ interface PurchaseRow {
   purchase_price: number | '';
   sale_price: number | '';
   qty: number | '';
+  free: number | '';
   batch: string;
   expiry: string;
   mrp: number | '';
@@ -57,6 +59,7 @@ const createEmptyRow = (rowId: number): PurchaseRow => ({
   purchase_price: 0,
   sale_price: 0,
   qty: 1,
+  free: 0,
   batch: '',
   expiry: '',
   mrp: 0,
@@ -80,6 +83,8 @@ export default function PurchaseBill() {
   const [vendorSearch, setVendorSearch] = useState('');
   const [vendorResults, setVendorResults] = useState<VendorOption[]>([]);
   const [showVendorDrop, setShowVendorDrop] = useState(false);
+  const [selectedVendorIndex, setSelectedVendorIndex] = useState(-1);
+  const vendorInputRef = useRef<HTMLInputElement>(null);
   const [billNo, setBillNo] = useState(createPurchaseBillNo);
   const [billDate, setBillDate] = useState(new Date().toISOString().split('T')[0]);
   const [dueDate, setDueDate] = useState('');
@@ -100,19 +105,29 @@ export default function PurchaseBill() {
   
   const [selectedItemIndex, setSelectedItemIndex] = useState(-1);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [batchModalRowId, setBatchModalRowId] = useState<number | null>(null);
 
   const rowSeedRef = useRef(DEFAULT_ROW_COUNT + 1);
   const itemInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
-  const validRows = useMemo(() => cart.filter(row => row.itemId && row.name.trim()), [cart]);
-  const subtotal = validRows.reduce((sum, row) => sum + (Number(row.price) || 0) * (Number(row.qty) || 0), 0);
-  const totalDiscount = validRows.reduce((sum, row) => sum + ((Number(row.price) || 0) * (Number(row.qty) || 0) * ((Number(row.disc) || 0) / 100)), 0);
-  const afterDiscount = subtotal - totalDiscount;
-  const totalTax = validRows.reduce((sum, row) => {
-    const base = (Number(row.price) || 0) * (Number(row.qty) || 0) * (1 - (Number(row.disc) || 0) / 100);
-    return sum + base * ((Number(row.gst) || 0) / 100);
-  }, 0);
-  const net = Math.round(afterDiscount + totalTax);
+  const validRows = useMemo(() => cart.filter(row => (row.itemId || row.name.trim()) && (Number(row.qty) || 0) > 0 && (Number(row.price) || 0) > 0), [cart]);
+  
+  const { subtotal, totalDiscount, totalTax, net, afterDiscount } = useMemo(() => {
+    let sub = 0, disc = 0, tax = 0, total = 0;
+    validRows.forEach(row => {
+      const qtyVal = Number(row.qty) || 0;
+      const priceVal = Number(row.price) || 0;
+      const discVal = Number(row.disc) || 0;
+      const taxVal = Number(row.gst) || 0;
+      
+      const base = priceVal * qtyVal;
+      const discAmt = base * (discVal / 100);
+      const taxAmt = (base - discAmt) * (taxVal / 100);
+      
+      sub += base; disc += discAmt; tax += taxAmt; total += (base - discAmt + taxAmt);
+    });
+    return { subtotal: sub, totalDiscount: disc, totalTax: tax, net: Math.round(total * 100) / 100, afterDiscount: sub - disc };
+  }, [validRows]);
 
   const focusRowInput = (rowId?: number | null) => {
     const targetId = rowId ?? cart.find(row => !row.itemId)?.rowId ?? cart[0]?.rowId ?? null;
@@ -220,6 +235,7 @@ export default function PurchaseBill() {
       purchase_price: Number(item.purchase_price) || 0,
       sale_price: Number(item.sale_price) || 0,
       qty: 1,
+      free: 0,
       mrp: Number(item.sale_price) || 0,
       price: Number(item.purchase_price) || 0,
       disc: Number(item.discount) || 0,
@@ -339,6 +355,32 @@ export default function PurchaseBill() {
     return () => window.removeEventListener('keydown', handleKeydown);
   }, [activeRowId, cart]);
 
+  const handleFieldArrow = (e: React.KeyboardEvent, rowId: number, field: string) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const idx = cart.findIndex(r => r.rowId === rowId);
+      const targetIdx = e.key === 'ArrowDown' ? idx + 1 : idx - 1;
+      if (targetIdx >= 0 && targetIdx < cart.length) {
+        const targetRowId = cart[targetIdx].rowId;
+        const el = document.querySelector(`[data-row="${targetRowId}"][data-field="${field}"]`) as HTMLElement;
+        el?.focus();
+      }
+    }
+  };
+
+  const HeaderTip = ({ label, tip }: { label: string; tip: React.ReactNode }) => (
+    <span className="inline-flex items-center gap-0.5">
+      {label}
+      <span className="relative group cursor-help">
+        <HelpCircle size={10} className="text-slate-400 hover:text-brand transition-colors" />
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 invisible opacity-0 group-hover:visible group-hover:opacity-100 bg-slate-800 text-white text-[11px] px-3 py-2 rounded-lg shadow-xl z-50 font-normal normal-case tracking-normal transition-all duration-200 pointer-events-none min-w-[160px] text-left leading-relaxed">
+          {tip}
+          <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-[5px] border-transparent border-t-slate-800"></span>
+        </span>
+      </span>
+    </span>
+  );
+
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden text-sm">
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
@@ -360,9 +402,38 @@ export default function PurchaseBill() {
             <div className="relative max-w-sm">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
+                id="vendorSearch"
+                ref={vendorInputRef}
                 value={vendorSearch}
-                onChange={e => searchVendors(e.target.value)}
+                onChange={e => { searchVendors(e.target.value); setSelectedVendorIndex(-1); }}
                 onFocus={() => vendorSearch && setShowVendorDrop(true)}
+                onKeyDown={(e) => {
+                  if (showVendorDrop && vendorResults.length > 0) {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setSelectedVendorIndex(prev => (prev < vendorResults.length - 1 ? prev + 1 : prev));
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setSelectedVendorIndex(prev => (prev > 0 ? prev - 1 : 0));
+                    } else if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (selectedVendorIndex >= 0 && selectedVendorIndex < vendorResults.length) {
+                        const v = vendorResults[selectedVendorIndex];
+                        setVendor(v); setVendorSearch(v.name); setShowVendorDrop(false);
+                        setTimeout(() => document.getElementById('billNo')?.focus(), 0);
+                      } else if (vendorResults.length > 0) {
+                        const v = vendorResults[0];
+                        setVendor(v); setVendorSearch(v.name); setShowVendorDrop(false);
+                        setTimeout(() => document.getElementById('billNo')?.focus(), 0);
+                      }
+                    } else if (e.key === 'Escape') {
+                      setShowVendorDrop(false);
+                    }
+                  } else if (e.key === 'Enter' || e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    document.getElementById('billNo')?.focus();
+                  }
+                }}
                 placeholder="Search Supplier by Name/Phone *"
                 autoFocus
                 className="w-full pl-8 pr-4 h-10 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm"
@@ -370,11 +441,15 @@ export default function PurchaseBill() {
               {vendor && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-brand bg-blue-50 px-2 py-0.5 rounded">{vendor.name}</span>}
               {showVendorDrop && vendorResults.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-50 max-h-52 overflow-y-auto">
-                  {vendorResults.map(v => (
+                  {vendorResults.map((v, idx) => (
                     <button
                       key={v.id}
-                      onClick={() => { setVendor(v); setVendorSearch(v.name); setShowVendorDrop(false); }}
-                      className="w-full text-left px-4 py-2.5 hover:bg-slate-50 border-b border-slate-100 last:border-0"
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => { 
+                        setVendor(v); setVendorSearch(v.name); setShowVendorDrop(false); 
+                        setTimeout(() => document.getElementById('billNo')?.focus(), 0);
+                      }}
+                      className={`w-full text-left px-4 py-2.5 border-b border-slate-100 last:border-0 ${idx === selectedVendorIndex ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
                     >
                       <p className="text-sm font-medium text-slate-700">{v.name}</p>
                       <p className="text-xs text-slate-400">Balance: ₹{v.opening_balance}</p>
@@ -383,41 +458,44 @@ export default function PurchaseBill() {
                 </div>
               )}
             </div>
-
-            <div className="relative max-w-sm">
-              <input
-                value={challanNo}
-                onChange={e => setChallanNo(e.target.value)}
-                placeholder="Challan / Order Number"
-                className="w-full h-10 border border-slate-200 rounded-lg text-sm px-3 bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm"
-              />
-            </div>
           </div>
 
           <div className="flex flex-col items-end gap-3 text-sm">
             <div className="flex items-center gap-4 w-64">
               <label className="text-slate-500 w-24 text-right">Bill Number</label>
               <input
+                id="billNo"
                 value={billNo}
                 onChange={e => setBillNo(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'ArrowDown' || e.key === 'Enter') {
+                    e.preventDefault();
+                    document.getElementById('billDate')?.focus();
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    document.getElementById('vendorSearch')?.focus();
+                  }
+                }}
                 className="flex-1 h-8 border-b-2 border-slate-100 focus:border-brand hover:border-slate-200 rounded-none bg-transparent px-1 font-mono focus:outline-none text-slate-700"
               />
             </div>
             <div className="flex items-center gap-4 w-64">
               <label className="text-slate-500 w-24 text-right">Bill Date</label>
               <input
+                id="billDate"
                 type="date"
                 value={billDate}
                 onChange={e => setBillDate(e.target.value)}
-                className="flex-1 h-8 border-b-2 border-slate-100 focus:border-brand hover:border-slate-200 rounded-none bg-transparent px-1 focus:outline-none text-slate-700"
-              />
-            </div>
-            <div className="flex items-center gap-4 w-64">
-              <label className="text-slate-500 w-24 text-right">Due Date</label>
-              <input
-                type="date"
-                value={dueDate}
-                onChange={e => setDueDate(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'ArrowDown' || e.key === 'Enter') {
+                    e.preventDefault();
+                    const el = document.querySelector('[data-row="1"][data-field="name"]') as HTMLElement;
+                    if (el) el.focus();
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    document.getElementById('billNo')?.focus();
+                  }
+                }}
                 className="flex-1 h-8 border-b-2 border-slate-100 focus:border-brand hover:border-slate-200 rounded-none bg-transparent px-1 focus:outline-none text-slate-700"
               />
             </div>
@@ -443,19 +521,21 @@ export default function PurchaseBill() {
           <table className="w-full min-w-[1100px] text-sm table-fixed">
             <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
               <tr className="text-slate-500 text-[11px] font-bold uppercase tracking-wider">
-                <th className="pl-6 pr-2 py-3 text-left w-10">#</th>
-                <th className="px-2 py-3 text-left w-[280px]">Item / Description</th>
-                {settings.show_batch && <th className="px-2 py-3 text-left w-28">Batch No.</th>}
-                {settings.show_expiry && <th className="px-2 py-3 text-left w-28">Exp. Date</th>}
-                {settings.show_mrp && <th className="px-2 py-3 text-right w-20">MRP</th>}
-                <th className="px-2 py-3 text-right w-20">Qty</th>
-                <th className="px-2 py-3 text-left w-24">Unit</th>
-                <th className="px-2 py-3 text-right w-16" title="Tabs per Strip">T/Str</th>
-                <th className="px-2 py-3 text-right w-16" title="Strips per Box">S/Bx</th>
-                {settings.show_tax && <th className="px-2 py-3 text-right w-24">GST%</th>}
-                <th className="px-2 py-3 text-right w-28">Purchase ₹</th>
-                <th className="px-2 py-3 text-right w-28">Amount</th>
-                <th className="pr-6 pl-2 py-3 w-12"></th>
+                <th className="pl-4 pr-1 py-2 text-left w-8">#</th>
+                <th className="px-1 py-2 text-left w-[220px]"><HeaderTip label="Item" tip={<><b>Item / Description</b><br/>દવાનું નામ અથવા વર્ણન.<br/><span className="text-slate-300">Search and select the medicine.</span></>} /></th>
+                {settings.show_batch && <th className="px-1 py-2 text-left w-24"><HeaderTip label="Batch" tip={<><b>Batch Number</b><br/>બેચ નંબર.<br/><span className="text-slate-300">Must match the physical stock.</span></>} /></th>}
+                {settings.show_expiry && <th className="px-1 py-2 text-left w-24"><HeaderTip label="Exp." tip={<><b>Expiry Date</b><br/>એક્સપાયરી તારીખ.<br/><span className="text-slate-300">Format: DD-MM-YYYY</span></>} /></th>}
+                {settings.show_mrp && <th className="px-1 py-2 text-right w-16"><HeaderTip label="MRP" tip={<><b>Max Retail Price</b><br/>મહત્તમ છૂટક કિંમત.<br/><span className="text-slate-300">Printed price on the package.</span></>} /></th>}
+                <th className="px-1 py-2 text-right w-14"><HeaderTip label="Qty" tip={<><b>Quantity</b><br/>જથ્થો / નંગ.<br/><span className="text-slate-300">Units being purchased.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-12"><HeaderTip label="Free" tip={<><b>Free Quantity</b><br/>મફત જથ્થો.<br/><span className="text-slate-300">Items received for free.</span></>} /></th>
+                <th className="px-1 py-2 text-left w-18"><HeaderTip label="Unit" tip={<><b>Unit Type</b><br/>એકમ.<br/><span className="text-slate-300">Buying unit (TAB/STRIP/BOX).</span></>} /></th>
+                <th className="px-1 py-2 text-right w-12"><HeaderTip label="T/S" tip={<><b>Tabs per Strip</b><br/>એક સ્ટ્રિપમાં કેટલી ટેબલેટ.<br/><span className="text-slate-300">Conversion rate.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-12"><HeaderTip label="S/B" tip={<><b>Strips per Box</b><br/>એક બોક્સમાં કેટલી સ્ટ્રિપ.<br/><span className="text-slate-300">Conversion rate.</span></>} /></th>
+                {settings.show_tax && <th className="px-1 py-2 text-right w-14"><HeaderTip label="GST%" tip={<><b>GST Percentage</b><br/>જીએસટી ટકાવારી.<br/><span className="text-slate-300">Tax applied to this item.</span></>} /></th>}
+                <th className="px-1 py-2 text-right w-14"><HeaderTip label="Disc%" tip={<><b>Discount Percentage</b><br/>ડિસ્કાઉન્ટ ટકાવારી.<br/><span className="text-slate-300">Discount from supplier.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Price ₹" tip={<><b>Purchase Price</b><br/>ખરીદી કિંમત.<br/><span className="text-slate-300">Base price before tax/disc.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Amount" tip={<><b>Total Amount</b><br/>કુલ રકમ.<br/><span className="font-mono text-[10px] text-green-300 mt-1 block tracking-tight">Qty × Price - Disc + GST</span></>} /></th>
+                <th className="pr-4 pl-1 py-2 w-8"></th>
               </tr>
             </thead>
 
@@ -474,16 +554,18 @@ export default function PurchaseBill() {
                 return (
                   <React.Fragment key={row.rowId}>
                     <tr className="border-b border-slate-100 hover:bg-slate-50/70">
-                    <td className="pl-6 pr-2 py-2 text-slate-400 font-mono text-xs align-top">{idx + 1}</td>
-                    <td className="px-2 py-2 align-top">
+                    <td className="pl-4 pr-1 py-1 text-slate-400 font-mono text-xs align-top">{idx + 1}</td>
+                    <td className="px-1 py-1 align-top">
                       <div className="relative">
                           <input
+                            data-row={row.rowId} data-field="name"
                             ref={node => { itemInputRefs.current[row.rowId] = node; }}
                             value={row.name}
                             onFocus={() => {
                               setActiveRowId(row.rowId);
-                              if (row.name.trim()) setShowItemDrop(true);
+                              if (row.name.trim() && !row.itemId) setShowItemDrop(true);
                             }}
+                            onBlur={() => setShowItemDrop(false)}
                             onKeyDown={(e) => {
                               if (activeRowId === row.rowId && showItemDrop && itemResults.length > 0) {
                                 if (e.key === 'ArrowDown') {
@@ -506,11 +588,13 @@ export default function PurchaseBill() {
                                   const nextIdx = cart.findIndex(r => r.rowId === row.rowId) + 1;
                                   if (nextIdx < cart.length) focusRowInput(cart[nextIdx].rowId);
                                   else addEmptyRow();
+                              } else {
+                                handleFieldArrow(e, row.rowId, 'name');
                               }
                             }}
                             onChange={e => searchItems(row.rowId, e.target.value)}
                             placeholder="Type item name"
-                            className="w-full h-10 border border-slate-200 rounded-lg px-3 bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                            className="w-full h-8 border border-slate-200 rounded-md px-2 text-sm bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                           />
                           {activeRowId === row.rowId && showItemDrop && row.name.trim() && (
                             <div className="absolute left-0 top-[calc(100%+6px)] z-40 w-[420px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl ring-1 ring-black/5">
@@ -568,28 +652,32 @@ export default function PurchaseBill() {
                       </div>
                     </td>
                     {settings.show_batch && (
-                      <td className="px-2 py-2 align-top">
-                        <input
-                          value={row.batch}
-                          onChange={e => updateRow(row.rowId, 'batch', e.target.value)}
-                          className="w-full h-10 border border-slate-200 rounded-lg px-3 bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
-                        />
+                      <td className="px-1 py-1 align-top">
+                        <button
+                          onClick={() => { if (row.itemId) { setActiveRowId(row.rowId); setBatchModalRowId(row.rowId); } }}
+                          className={`w-full h-8 border rounded-md px-2 text-xs text-left truncate transition-colors ${
+                            row.batch ? 'border-slate-200 bg-white font-mono font-semibold text-slate-700' : 'border-dashed border-slate-300 bg-slate-50 text-slate-400'
+                          } hover:border-brand hover:bg-brand/5 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand`}
+                          title={row.itemId ? 'Click to manage batches' : 'Select an item first'}
+                        >
+                          {row.batch || (row.itemId ? '+ Batch' : '—')}
+                        </button>
                       </td>
                     )}
                     {settings.show_expiry && (
-                      <td className="px-2 py-2 align-top">
+                      <td className="px-1 py-1 align-top">
                         <input
                           value={row.expiry}
                           onFocus={() => setActiveRowId(row.rowId)}
                           onChange={e => updateRow(row.rowId, 'expiry', e.target.value)}
                           onBlur={e => updateRow(row.rowId, 'expiry', formatExpiryInput(e.target.value))}
                           placeholder="DD-MM-YYYY"
-                          className="w-full h-10 border border-slate-200 rounded-lg px-3 bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                          className="w-full h-8 border border-slate-200 rounded-md px-2 text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                         />
                       </td>
                     )}
                     {settings.show_mrp && (
-                      <td className="px-2 py-2 align-top">
+                      <td className="px-1 py-1 align-top">
                         <input
                           type="text"
                           value={row.mrp}
@@ -597,26 +685,41 @@ export default function PurchaseBill() {
                             const val = e.target.value;
                             updateRow(row.rowId, 'mrp', val === '' ? '' : Number(val));
                           }}
-                          className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                          className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                         />
                       </td>
                     )}
-                    <td className="px-2 py-2 align-top">
+                    <td className="px-1 py-1 align-top">
                       <input
                         type="text"
+                        data-row={row.rowId} data-field="qty"
                         value={row.qty}
                         onChange={e => {
                           const val = e.target.value;
                           updateRow(row.rowId, 'qty', val === '' ? '' : Number(val));
                         }}
-                        className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'qty')}
+                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
-                    <td className="px-2 py-2 align-top">
+                    <td className="px-1 py-1 align-top">
+                      <input
+                        type="text"
+                        data-row={row.rowId} data-field="free"
+                        value={row.free}
+                        onChange={e => {
+                          const val = e.target.value;
+                          updateRow(row.rowId, 'free', val === '' ? '' : Number(val));
+                        }}
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'free')}
+                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                      />
+                    </td>
+                    <td className="px-1 py-1 align-top">
                       <select
                         value={row.unit || 'TAB'}
                         onChange={e => handleUnitChange(row.rowId, e.target.value)}
-                        className="w-full h-10 border border-slate-200 rounded-lg px-2 bg-slate-50 text-xs font-bold text-slate-600 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        className="w-full h-8 border border-slate-200 rounded-md px-1 bg-slate-50 text-xs font-bold text-slate-600 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       >
                         <option value="BOX">BOX</option>
                         <option value="STRIP">STRIP</option>
@@ -625,7 +728,7 @@ export default function PurchaseBill() {
                         <option value="BTL">BTL</option>
                       </select>
                     </td>
-                    <td className="px-2 py-2 align-top">
+                    <td className="px-1 py-1 align-top">
                       <input
                         type="text"
                         value={row.tabsPerStrip}
@@ -633,10 +736,10 @@ export default function PurchaseBill() {
                           const val = e.target.value;
                           updateRow(row.rowId, 'tabsPerStrip', val === '' ? '' : Number(val));
                         }}
-                        className="w-full h-10 border border-slate-200 rounded-lg px-1 text-center font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand text-xs"
+                        className="w-full h-8 border border-slate-200 rounded-md px-1 text-center font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
-                    <td className="px-2 py-2 align-top">
+                    <td className="px-1 py-1 align-top">
                       <input
                         type="text"
                         value={row.stripsPerBox}
@@ -644,11 +747,11 @@ export default function PurchaseBill() {
                           const val = e.target.value;
                           updateRow(row.rowId, 'stripsPerBox', val === '' ? '' : Number(val));
                         }}
-                        className="w-full h-10 border border-slate-200 rounded-lg px-1 text-center font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand text-xs"
+                        className="w-full h-8 border border-slate-200 rounded-md px-1 text-center font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
                     {settings.show_tax && (
-                      <td className="px-2 py-2 align-top">
+                      <td className="px-1 py-1 align-top">
                         <input
                           type="text"
                           value={row.gst}
@@ -656,30 +759,45 @@ export default function PurchaseBill() {
                             const val = e.target.value;
                             updateRow(row.rowId, 'gst', val === '' ? '' : Number(val));
                           }}
-                          className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                          className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                         />
                       </td>
                     )}
-                    <td className="px-2 py-2 align-top">
+                    <td className="px-1 py-1 align-top">
                       <input
                         type="text"
+                        data-row={row.rowId} data-field="disc"
+                        value={row.disc}
+                        onChange={e => {
+                          const val = e.target.value;
+                          updateRow(row.rowId, 'disc', val === '' ? '' : Number(val));
+                        }}
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'disc')}
+                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                      />
+                    </td>
+                    <td className="px-1 py-1 align-top">
+                      <input
+                        type="text"
+                        data-row={row.rowId} data-field="price"
                         value={row.price}
                         onChange={e => {
                           const val = e.target.value;
                           updateRow(row.rowId, 'price', val === '' ? '' : Number(val));
                         }}
-                        className="w-full h-10 border border-slate-200 rounded-lg px-3 text-right font-mono bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'price')}
+                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
-                    <td className="px-2 py-2 align-top text-right font-medium font-mono text-slate-800">
-                      <div className="h-10 flex items-center justify-end">{row.itemId ? rowAmount.toFixed(2) : '0.00'}</div>
+                    <td className="px-1 py-1 align-top text-right font-medium font-mono text-slate-800">
+                      <div className="h-8 flex items-center justify-end text-xs">{rowAmount.toFixed(2)}</div>
                     </td>
-                    <td className="pr-6 pl-2 py-2 align-top text-right">
+                    <td className="pr-4 pl-1 py-1 align-top text-right">
                       <button
                         onClick={() => clearRow(row.rowId)}
-                        className="mt-2 ml-auto flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-200 hover:text-red-500"
+                        className="mt-1 ml-auto flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-200 hover:text-red-500"
                       >
-                        <Trash2 size={14} />
+                        <Trash2 size={12} />
                       </button>
                     </td>
                   </tr>
@@ -689,7 +807,7 @@ export default function PurchaseBill() {
           </tbody>
             <tfoot className="bg-slate-50 border-t border-b border-slate-200 sticky bottom-0 z-10">
               <tr>
-                <td colSpan={5} className="px-6 py-2">
+                <td colSpan={2} className="px-4 py-2">
                   <div className="flex items-center gap-4">
                     <button
                       onClick={addEmptyRow}
@@ -700,10 +818,10 @@ export default function PurchaseBill() {
                     <span className="font-medium text-slate-600">Total</span>
                   </div>
                 </td>
-                <td className="px-2 py-3 text-right font-bold text-slate-700 font-mono">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
-                <td colSpan={2}></td>
-                <td></td>
-                <td className="px-2 py-3 text-right font-bold text-slate-800 font-mono">{net.toFixed(2)}</td>
+                <td colSpan={(settings.show_batch ? 1 : 0) + (settings.show_expiry ? 1 : 0) + (settings.show_mrp ? 1 : 0)}></td>
+                <td className="px-1 py-2 text-right font-bold text-slate-700 font-mono text-xs">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
+                <td colSpan={4 + (settings.show_tax ? 1 : 0)}></td>
+                <td className="px-1 py-2 text-right font-bold text-slate-800 font-mono text-xs">{net.toFixed(2)}</td>
                 <td></td>
               </tr>
             </tfoot>
@@ -816,6 +934,7 @@ export default function PurchaseBill() {
                 purchase_price: Number(it.purchase_price) || 0,
                 sale_price: Number(it.sale_price) || 0,
                 qty: it.qty_extracted || 1,
+                free: 0,
                 batch: '',
                 expiry: '',
                 mrp: Number(it.sale_price) || 0,
@@ -836,6 +955,21 @@ export default function PurchaseBill() {
           }}
         />
       )}
+      {batchModalRowId !== null && (() => {
+        const batchRow = cart.find(r => r.rowId === batchModalRowId);
+        if (!batchRow?.itemId) return null;
+        return (
+          <BatchModal
+            itemId={batchRow.itemId}
+            itemName={batchRow.name}
+            onClose={() => setBatchModalRowId(null)}
+            onSelect={(batch, expiry, qty) => {
+              setCart(prev => prev.map(r => r.rowId === batchModalRowId ? { ...r, batch, expiry, ...(qty > 0 ? { qty } : {}) } : r));
+              setBatchModalRowId(null);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
