@@ -1,0 +1,21 @@
+
+╔══════════════════════════════════════════╗
+║   MediFlow — Cloud Migration Tool       ║
+╚══════════════════════════════════════════╝
+
+🔍 Looking for Raghuveer Medical store in Supabase...
+
+  Found stores:
+  1. [0a05c5d1-d4a8-4d4a-95a2-5d3aaf6ed7e0] Raghuveer Medical (active: true)
+  2. [37f442d7-676d-43a4-85dc-898a4bc804d0] Raghuveer Medical & Provision Store (active: true)
+
+  ✓ Found: "Raghuveer Medical" → 0a05c5d1-d4a8-4d4a-95a2-5d3aaf6ed7e0
+
+📦 Starting migration to store: 0a05c5d1-d4a8-4d4a-95a2-5d3aaf6ed7e0
+   Source: D:\Billing Software\mediflow\src-tauri\mediflow.db
+
+  Local data: 1584 items, 45 parties, 1894 transactions, 8614 line items
+
+
+  ❌ Items batch 0-200 failed (HTTP 409):
+   {"code":"23505","details":"Key (store_id, name)=(0a05c5d1-d4a8-4d4a-95a2-5d3aaf6ed7e0, 10ML SYRING) already exists.","hint":null,"message":"duplicate key value violates unique constraint \"items_store_id_name_key\""}

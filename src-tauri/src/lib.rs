@@ -39,64 +39,182 @@ fn start_scanner_server(app_handle: AppHandle) {
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <title>MediFlow Auto-Scanner</title>
+  <title>MediFlow Mobile Scanner</title>
   <style>
-    body { font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #0f172a; color: white; margin: 0; }
-    .btn { background: #3b82f6; color: white; padding: 20px 40px; border-radius: 16px; font-size: 20px; font-weight: bold; border: none; cursor: pointer; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); transition: transform 0.1s; display: inline-block; margin-top:20px; text-align:center;}
-    .btn:active { transform: scale(0.95); }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+      display: flex; 
+      flex-direction: column; 
+      align-items: center; 
+      justify-content: center; 
+      min-height: 100vh; 
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); 
+      color: #f8fafc; 
+      margin: 0; 
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .card {
+      background: rgba(30, 41, 59, 0.7);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 32px 24px;
+      width: 100%;
+      max-width: 340px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+    }
+    .title { 
+      margin: 0; 
+      color: #60a5fa; 
+      font-size: 28px; 
+      font-weight: 800;
+      letter-spacing: -0.5px;
+    }
+    .subtitle { 
+      margin: 6px 0 0 0; 
+      opacity: 0.8; 
+      font-size: 13px;
+      font-weight: 500;
+      color: #94a3b8;
+    }
+    .btn-group {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      width: 100%;
+      margin-top: 28px;
+    }
+    .btn { 
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); 
+      color: white; 
+      padding: 16px; 
+      border-radius: 14px; 
+      font-size: 16px; 
+      font-weight: 700; 
+      border: none; 
+      cursor: pointer; 
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2); 
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); 
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      text-align: center;
+    }
+    .btn.secondary {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #e2e8f0;
+      box-shadow: none;
+    }
+    .btn:active { 
+      transform: scale(0.97); 
+      opacity: 0.9;
+    }
     input[type=file] { display: none; }
-    #status { margin-top: 30px; font-size: 16px; font-weight: 500; opacity: 0.9; text-align: center; }
-    #preview { margin-top: 20px; max-width: 80%; max-height: 250px; border-radius: 8px; display: none; box-shadow: 0 4px 6px rgba(0,0,0,0.5); }
+    #status { 
+      margin-top: 24px; 
+      font-size: 13px; 
+      font-weight: 600; 
+      color: #cbd5e1;
+      text-align: center; 
+      background: rgba(15, 23, 42, 0.6);
+      padding: 8px 16px;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+    #preview { 
+      margin-top: 20px; 
+      max-width: 100%; 
+      max-height: 200px; 
+      border-radius: 12px; 
+      display: none; 
+      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.4); 
+      border: 1px solid rgba(255,255,255,0.1);
+    }
   </style>
 </head>
 <body>
-  <div style="text-align: center; margin-bottom: 20px;">
-    <h1 style="margin: 0; color: #60a5fa; font-size: 28px;">MediFlow</h1>
-    <p style="margin: 5px 0 0 0; opacity: 0.7;">Bills Mobile Scanner</p>
+  <div class="card">
+    <div style="text-align: center;">
+      <h1 class="title">MediFlow</h1>
+      <p class="subtitle">Mobile Bills Scanner</p>
+    </div>
+    
+    <div class="btn-group">
+      <label for="camera" class="btn">
+        <span>📸</span> Snap Bill (Camera)
+      </label>
+      <input type="file" accept="image/*" capture="environment" id="camera" />
+      
+      <label for="gallery" class="btn secondary">
+        <span>📁</span> Upload from Files
+      </label>
+      <input type="file" accept="image/*" id="gallery" />
+    </div>
+
+    <img id="preview" />
+    <div id="status">Waiting for photo...</div>
   </div>
-  <label for="camera" class="btn">📸 Snap Bill</label>
-  <input type="file" accept="image/*" capture="environment" id="camera" />
-  <img id="preview" />
-  <div id="status">Waiting for photo...</div>
+
   <script>
     const camera = document.getElementById('camera');
+    const gallery = document.getElementById('gallery');
     const status = document.getElementById('status');
     const preview = document.getElementById('preview');
 
-    camera.addEventListener('change', async (e) => {
+    const handleFile = async (file) => {
+       if (!file) return;
+       const img = new Image();
+       img.onload = async () => {
+          const MAX_WIDTH = 2400;
+          let w = img.width, h = img.height;
+          if (w > MAX_WIDTH) { h = Math.round((h * MAX_WIDTH) / w); w = MAX_WIDTH; }
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+          preview.src = dataUrl;
+          preview.style.display = 'block';
+          status.innerHTML = '🚀 <span style="color:#fbbf24">Sending securely to Desktop...</span>';
+          
+          try {
+              const response = await fetch('/upload', { method: 'POST', body: dataUrl });
+              if (response.ok) {
+                 status.innerHTML = '✅ <span style="color:#4ade80">Sent! Check your PC screen.</span>';
+                 setTimeout(() => { 
+                   status.innerText = 'Ready for another photo.'; 
+                   preview.style.display = 'none'; 
+                   camera.value = ''; 
+                   gallery.value = ''; 
+                 }, 4000);
+              } else {
+                 throw new Error('Server returned ' + response.status);
+              }
+          } catch(err) {
+              status.innerHTML = '❌ <span style="color:#f87171">Failed to send. Check Wi-Fi.</span>';
+          }
+       };
+       const r = new FileReader();
+       r.onload = e => img.src = e.target.result;
+       r.readAsDataURL(file);
+    };
+
+    camera.addEventListener('change', (e) => {
       if (!e.target.files.length) return;
-      const file = e.target.files[0];
-      
-      const img = new Image();
-      img.onload = async () => {
-         const MAX_WIDTH = 2400;
-         let w = img.width, h = img.height;
-         if (w > MAX_WIDTH) { h = Math.round((h * MAX_WIDTH) / w); w = MAX_WIDTH; }
-         const canvas = document.createElement('canvas');
-         canvas.width = w; canvas.height = h;
-         const ctx = canvas.getContext('2d');
-         ctx.drawImage(img, 0, 0, w, h);
-         
-         const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-         preview.src = dataUrl;
-         preview.style.display = 'block';
-         status.innerHTML = '🚀 <span style="color:#fbbf24">Sending securely to Desktop...</span>';
-         
-         try {
-             const response = await fetch('/upload', { method: 'POST', body: dataUrl });
-             if (response.ok) {
-                status.innerHTML = '✅ <span style="color:#4ade80">Sent! Check your PC screen.</span>';
-                setTimeout(() => { status.innerText = 'Ready for another photo.'; preview.style.display = 'none'; camera.value = ''; }, 4000);
-             } else {
-                throw new Error('Server returned ' + response.status);
-             }
-         } catch(err) {
-             status.innerHTML = '❌ <span style="color:#f87171">Failed to send. Check Wi-Fi.</span>';
-         }
-      };
-      const r = new FileReader();
-      r.onload = e => img.src = e.target.result;
-      r.readAsDataURL(file);
+      handleFile(e.target.files[0]);
+    });
+
+    gallery.addEventListener('change', (e) => {
+      if (!e.target.files.length) return;
+      handleFile(e.target.files[0]);
     });
   </script>
 </body>

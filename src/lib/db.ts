@@ -79,6 +79,7 @@ export const initDB = async () => {
       amount REAL DEFAULT 0,
       discount_pct REAL DEFAULT 0,
       tax_pct REAL DEFAULT 0,
+      scheme_amount REAL DEFAULT 0,
       batch_no TEXT,
       expiry_date TEXT,
       FOREIGN KEY(txn_id) REFERENCES transactions(id),
@@ -91,6 +92,7 @@ export const initDB = async () => {
   await safeAddColumn(dbInstance, 'transaction_items', 'amount', 'REAL DEFAULT 0');
   await safeAddColumn(dbInstance, 'transaction_items', 'discount_pct', 'REAL DEFAULT 0');
   await safeAddColumn(dbInstance, 'transaction_items', 'tax_pct', 'REAL DEFAULT 0');
+  await safeAddColumn(dbInstance, 'transaction_items', 'scheme_amount', 'REAL DEFAULT 0');
   await safeAddColumn(dbInstance, 'items', 'tabs_per_strip', 'REAL DEFAULT 10');
   await safeAddColumn(dbInstance, 'items', 'strips_per_box', 'REAL DEFAULT 10');
   await safeAddColumn(dbInstance, 'order_book', 'status', "TEXT DEFAULT 'pending'");

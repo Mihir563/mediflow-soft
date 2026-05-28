@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { getDB } from '@/lib/db';
 import { X, Plus, Search, Package, Edit2, Check, Trash2 } from 'lucide-react';
+import SmartExpiryInput from '@/components/SmartExpiryInput';
 
 interface BatchInfo {
   batch_no: string;
@@ -70,6 +71,18 @@ export default function BatchModal({ itemId, itemName, onClose, onSelect }: Batc
 
   const handleAddBatch = () => {
     if (!newBatch.trim()) return;
+
+    if (newExpiry && newExpiry.trim() !== '') {
+      const parts = newExpiry.split('/');
+      const m = parts.length > 0 ? parseInt(parts[0], 10) : 0;
+      const yStr = parts.length > 1 ? parts[1] : '';
+      const y = parseInt(yStr, 10);
+      if (parts.length !== 2 || isNaN(m) || m < 1 || m > 12 || isNaN(y) || (yStr.length !== 2 && yStr.length !== 4)) {
+        alert('❌ Please enter a valid Expiry Date (e.g., 12/26 or 12/2026)');
+        return;
+      }
+    }
+
     const newEntry: BatchInfo = {
       batch_no: newBatch.trim(),
       expiry_date: newExpiry,
@@ -84,6 +97,16 @@ export default function BatchModal({ itemId, itemName, onClose, onSelect }: Batc
   };
 
   const handleSaveEdit = (idx: number) => {
+    if (editExpiry && editExpiry.trim() !== '') {
+      const parts = editExpiry.split('/');
+      const m = parts.length > 0 ? parseInt(parts[0], 10) : 0;
+      const yStr = parts.length > 1 ? parts[1] : '';
+      const y = parseInt(yStr, 10);
+      if (parts.length !== 2 || isNaN(m) || m < 1 || m > 12 || isNaN(y) || (yStr.length !== 2 && yStr.length !== 4)) {
+        alert('❌ Please enter a valid Expiry Date (e.g., 12/26 or 12/2026)');
+        return;
+      }
+    }
     setBatches(prev => prev.map((b, i) => i === idx ? { ...b, batch_no: editBatch, expiry_date: editExpiry } : b));
     setEditIdx(null);
   };
@@ -177,11 +200,11 @@ export default function BatchModal({ itemId, itemName, onClose, onSelect }: Batc
             </div>
             <div className="flex-1">
               <label className="text-xs font-semibold text-slate-600 block mb-1">Exp. Date</label>
-              <input
-                type="month"
+              <SmartExpiryInput
                 value={newExpiry}
-                onChange={e => setNewExpiry(e.target.value)}
-                className="w-full h-9 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand bg-white"
+                onChange={setNewExpiry}
+                placeholder="MM/YY"
+                className="!h-9"
               />
             </div>
             <button onClick={handleAddBatch} className="h-9 px-4 bg-brand text-white rounded-lg text-xs font-bold hover:bg-brand-hover transition-colors">Add</button>
@@ -240,8 +263,12 @@ export default function BatchModal({ itemId, itemName, onClose, onSelect }: Batc
                       </td>
                       <td className="px-4 py-2.5 text-slate-600">
                         {isEditing ? (
-                          <input type="month" value={editExpiry} onChange={e => setEditExpiry(e.target.value)}
-                            className="w-full h-7 border border-brand rounded px-2 text-xs focus:outline-none" />
+                          <SmartExpiryInput
+                            value={editExpiry}
+                            onChange={setEditExpiry}
+                            placeholder="MM/YY"
+                            className="!h-7"
+                          />
                         ) : (
                           formatExpiry(batch.expiry_date)
                         )}

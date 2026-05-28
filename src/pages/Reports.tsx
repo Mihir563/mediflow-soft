@@ -2,16 +2,25 @@
 import { useState, useEffect } from 'react';
 import { getDB } from '@/lib/db';
 import { Download, Search } from 'lucide-react';
+import SmartDateInput from '@/components/SmartDateInput';
+import BillDetailModal from '@/components/BillDetailModal';
 
 type ReportType = 'sale' | 'purchase' | 'stock' | 'ledger';
 
-export default function Reports({ initialSearch = '' }: { initialSearch?: string }) {
+interface ReportsProps {
+  initialSearch?: string;
+  onEditPurchase?: (txnId: number) => void;
+  onEditSale?: (txnId: number) => void;
+}
+
+export default function Reports({ initialSearch = '', onEditPurchase, onEditSale }: ReportsProps) {
   const [reportType, setReportType] = useState<ReportType>('sale');
   const [from, setFrom] = useState('2019-01-01'); // Defaulting earlier so migrated data is visible
   const [to, setTo] = useState(new Date().toISOString().split('T')[0]);
   const [data, setData] = useState<any[]>([]);
   const [search, setSearch] = useState(initialSearch);
   const [loading, setLoading] = useState(false);
+  const [selectedTxnId, setSelectedTxnId] = useState<number | null>(null);
 
   useEffect(() => {
     if (initialSearch) setSearch(initialSearch);
@@ -65,6 +74,8 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
     { key: 'ledger', label: '👥 Party Ledger' },
   ];
 
+  const isBillReport = reportType === 'sale' || reportType === 'purchase';
+
   return (
     <div className="h-full flex flex-col bg-slate-50">
       {/* Header */}
@@ -86,13 +97,23 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <label className="text-xs text-slate-500">From</label>
-              <input type="date" value={from} onChange={e => setFrom(e.target.value)}
-                className="h-8 border border-slate-200 rounded-lg text-sm px-3 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <div className="w-36">
+                <SmartDateInput
+                  value={from}
+                  onChange={setFrom}
+                  className="!h-8 !px-3"
+                />
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <label className="text-xs text-slate-500">To</label>
-              <input type="date" value={to} onChange={e => setTo(e.target.value)}
-                className="h-8 border border-slate-200 rounded-lg text-sm px-3 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <div className="w-36">
+                <SmartDateInput
+                  value={to}
+                  onChange={setTo}
+                  className="!h-8 !px-3"
+                />
+              </div>
             </div>
             <div className="relative ml-4">
               <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -103,6 +124,16 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
               <span className="text-slate-400">{filtered.length} records</span>
               <span className="font-bold text-slate-800">Total: ₹{totals.amount.toFixed(2)}</span>
             </div>
+          </div>
+        )}
+        {(reportType === 'stock' || reportType === 'ledger') && (
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Filter results..."
+                className="pl-8 pr-4 h-8 w-52 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <span className="text-xs text-slate-400 ml-2">{filtered.length} records</span>
           </div>
         )}
       </div>
@@ -124,6 +155,7 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
                   <th className="px-2 py-3 text-right w-24">Total Amount</th>
                   <th className="px-2 py-3 text-right w-24">Received</th>
                   <th className="px-2 py-3 text-right w-24">Balance Due</th>
+                  <th className="px-2 py-3 text-center w-20">Action</th>
                 </tr>
               )}
               {reportType === 'purchase' && (
@@ -136,6 +168,7 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
                   <th className="px-2 py-3 text-right w-24">Total Amount</th>
                   <th className="px-2 py-3 text-right w-24">Paid</th>
                   <th className="px-2 py-3 text-right w-24">Balance Due</th>
+                  <th className="px-2 py-3 text-center w-20">Action</th>
                 </tr>
               )}
               {reportType === 'stock' && (
@@ -165,11 +198,15 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
             </thead>
             <tbody>
               {filtered.map((row, i) => (
-                <tr key={i} className="border-b border-slate-100 hover:bg-white transition-colors">
+                <tr
+                  key={i}
+                  className={`border-b border-slate-100 transition-colors ${isBillReport ? 'hover:bg-blue-50/60 cursor-pointer group' : 'hover:bg-white'}`}
+                  onClick={isBillReport ? () => setSelectedTxnId(row.id) : undefined}
+                >
                   {(reportType === 'sale' || reportType === 'purchase') && (
                     <>
                       <td className="pl-6 py-3 text-slate-500 text-sm whitespace-nowrap">{row.date ? new Date(row.date).toLocaleDateString('en-GB') : ''}</td>
-                      <td className="px-2 py-3 font-mono text-xs text-brand">{row.invoice_no || `#${row.id}`}</td>
+                      <td className="px-2 py-3 font-mono text-xs text-brand group-hover:underline font-semibold">{row.invoice_no || `#${row.id}`}</td>
                       <td className="px-2 py-3">
                         <p className="font-semibold text-slate-800">{row.party_name || 'Walk-in'}</p>
                         {row.phone && <p className="text-[10px] text-slate-400 font-mono">{row.phone}</p>}
@@ -184,6 +221,14 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
                       <td className="px-2 py-3 text-right font-semibold font-mono text-slate-800">₹{row.total_amount?.toFixed(2)}</td>
                       <td className="px-2 py-3 text-right font-mono text-green-600">₹{(row.paid_amount ?? row.total_amount)?.toFixed(2)}</td>
                       <td className="px-2 py-3 text-right font-mono text-orange-600 font-medium">₹{(row.balance_due ?? 0).toFixed(2)}</td>
+                      <td className="px-2 py-3 text-center" onClick={e => e.stopPropagation()}>
+                        <button
+                          onClick={() => setSelectedTxnId(row.id)}
+                          className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-brand/10 text-brand hover:bg-brand hover:text-white transition-colors"
+                        >
+                          View
+                        </button>
+                      </td>
                     </>
                   )}
                   {reportType === 'stock' && (
@@ -222,20 +267,31 @@ export default function Reports({ initialSearch = '' }: { initialSearch?: string
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={8} className="py-16 text-center text-slate-400 text-sm">No data found for this period</td></tr>
+                <tr><td colSpan={9} className="py-16 text-center text-slate-400 text-sm">No data found for this period</td></tr>
               )}
             </tbody>
-            {filtered.length > 0 && (reportType === 'sale' || reportType === 'purchase') && (
+            {filtered.length > 0 && isBillReport && (
               <tfoot className="bg-slate-100 border-t-2 border-slate-200 sticky bottom-0">
                 <tr className="font-bold text-slate-700">
-                  <td colSpan={3} className="pl-6 py-2.5 text-sm">Total ({filtered.length} records)</td>
+                  <td colSpan={5} className="pl-6 py-2.5 text-sm">Total ({filtered.length} records)</td>
                   <td className="px-2 py-2.5 text-right font-mono text-base">₹{totals.amount.toFixed(2)}</td>
+                  <td colSpan={3}></td>
                 </tr>
               </tfoot>
             )}
           </table>
         )}
       </div>
+
+      {/* Bill Detail Modal */}
+      {selectedTxnId !== null && (
+        <BillDetailModal
+          txnId={selectedTxnId}
+          onClose={() => setSelectedTxnId(null)}
+          onEditPurchase={onEditPurchase ? (id) => { setSelectedTxnId(null); onEditPurchase(id); } : undefined}
+          onEditSale={onEditSale ? (id) => { setSelectedTxnId(null); onEditSale(id); } : undefined}
+        />
+      )}
     </div>
   );
 }

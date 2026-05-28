@@ -1,0 +1,2209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediFlow SaaS — Interactive Roadmap & System Architecture</title>
+    <!-- Modern Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Premium Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --bg-base: #090a0f;
+            --bg-surface: #121420;
+            --bg-card: rgba(22, 26, 43, 0.65);
+            --bg-card-hover: rgba(28, 33, 55, 0.85);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(99, 102, 241, 0.3);
+            
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            
+            --primary: #6366f1; /* Indigo */
+            --primary-glow: rgba(99, 102, 241, 0.15);
+            --secondary: #14b8a6; /* Teal */
+            --secondary-glow: rgba(20, 184, 166, 0.15);
+            --accent: #a855f7; /* Purple */
+            --success: #10b981; /* Emerald */
+            --warning: #f59e0b; /* Amber */
+            --danger: #ef4444; /* Rose */
+            
+            --font-display: 'Outfit', sans-serif;
+            --font-sans: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+            
+            --glass-blur: 16px;
+            --shadow-premium: 0 20px 40px -15px rgba(0, 0, 0, 0.5);
+            --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Warm Night Theme Override */
+        [data-theme="warm"] {
+            --bg-base: #0f0d13;
+            --bg-surface: #1a1622;
+            --bg-card: rgba(32, 27, 43, 0.65);
+            --bg-card-hover: rgba(40, 34, 54, 0.85);
+            --border-color: rgba(255, 255, 255, 0.07);
+            --border-hover: rgba(236, 72, 153, 0.3);
+            --primary: #ec4899; /* Pink */
+            --primary-glow: rgba(236, 72, 153, 0.15);
+            --secondary: #f59e0b; /* Amber */
+            --secondary-glow: rgba(245, 158, 11, 0.15);
+            --accent: #ff007f;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border-color) transparent;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            line-height: 1.6;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(20, 184, 166, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 50% 50%, rgba(168, 85, 247, 0.05) 0%, transparent 60%);
+            background-attachment: fixed;
+        }
+
+        /* Custom Scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary);
+        }
+
+        /* Core Layout */
+        .container {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Glassmorphic Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            background: rgba(18, 20, 32, 0.6);
+            backdrop-filter: blur(var(--glass-blur));
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            border-radius: 0 0 16px 16px;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 42px;
+            height: 42px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: white;
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.4);
+            animation: pulse 3s infinite alternate;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); box-shadow: 0 0 15px rgba(99, 102, 241, 0.4); }
+            100% { transform: scale(1.05); box-shadow: 0 0 25px rgba(20, 184, 166, 0.6); }
+        }
+
+        .logo-text h1 {
+            font-family: var(--font-display);
+            font-size: 24px;
+            font-weight: 800;
+            background: linear-gradient(to right, #ffffff, #d1d5db);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo-text p {
+            font-size: 11px;
+            color: var(--secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-top: -2px;
+        }
+
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        /* Buttons & Toggles */
+        .btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-weight: 500;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: var(--transition-smooth);
+            font-size: 14px;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: var(--primary);
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border: none;
+            color: white;
+            box-shadow: 0 4px 15px var(--primary-glow);
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+            filter: brightness(1.1);
+        }
+
+        .theme-toggle {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: var(--transition-smooth);
+        }
+
+        .theme-toggle:hover {
+            border-color: var(--primary);
+            background: rgba(255, 255, 255, 0.08);
+            transform: rotate(15deg);
+        }
+
+        /* Progress Banner */
+        .hero-banner {
+            margin: 2rem 0;
+            background: linear-gradient(135deg, rgba(22, 26, 43, 0.6), rgba(12, 14, 25, 0.8));
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2.5rem;
+            display: grid;
+            grid-template-columns: 1.5fr 1fr;
+            gap: 2rem;
+            align-items: center;
+            position: relative;
+            overflow: hidden;
+            box-shadow: var(--shadow-premium);
+        }
+
+        .hero-banner::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .hero-text {
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--primary-glow);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            color: #c7d2fe;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+
+        .hero-text h2 {
+            font-family: var(--font-display);
+            font-size: 32px;
+            font-weight: 800;
+            margin-bottom: 0.75rem;
+            letter-spacing: -0.5px;
+        }
+
+        .hero-text p {
+            color: var(--text-secondary);
+            font-size: 16px;
+            max-width: 600px;
+            margin-bottom: 1.5rem;
+        }
+
+        .meta-stats {
+            display: flex;
+            gap: 2rem;
+        }
+
+        .meta-stat-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .meta-stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+
+        .meta-stat-val {
+            font-family: var(--font-display);
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .meta-stat-val.highlight {
+            color: var(--secondary);
+        }
+
+        .hero-progress {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            position: relative;
+            z-index: 1;
+        }
+
+        .progress-ring-container {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin-bottom: 1rem;
+        }
+
+        .progress-ring-circle {
+            transition: stroke-dashoffset 0.35s;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+        }
+
+        .progress-value {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: var(--font-display);
+            font-size: 26px;
+            font-weight: 800;
+            color: var(--text-primary);
+        }
+
+        .progress-details {
+            width: 100%;
+        }
+
+        .progress-bar-linear {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 8px 0;
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            width: 0%;
+            transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            border-radius: 4px;
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
+        }
+
+        .progress-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* Tabs Navigation */
+        .tabs-container {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 2rem;
+            padding: 4px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            width: fit-content;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-family: var(--font-display);
+            font-size: 15px;
+            cursor: pointer;
+            transition: var(--transition-smooth);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .tab-btn.active {
+            color: white;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            box-shadow: 0 4px 12px var(--primary-glow);
+        }
+
+        /* Tab Content Panels */
+        .tab-panel {
+            display: none;
+            animation: fadeIn 0.4s ease-out;
+        }
+
+        .tab-panel.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Content Card Grid */
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        @media (max-width: 1024px) {
+            .hero-banner {
+                grid-template-columns: 1fr;
+            }
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--bg-card);
+            backdrop-filter: blur(var(--glass-blur));
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 2rem;
+            transition: var(--transition-smooth);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, transparent, var(--primary), transparent);
+            opacity: 0;
+            transition: var(--transition-smooth);
+        }
+
+        .card:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--border-hover);
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-premium);
+        }
+
+        .card:hover::before {
+            opacity: 1;
+        }
+
+        .card-title {
+            font-family: var(--font-display);
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text-primary);
+        }
+
+        .card-title i {
+            color: var(--secondary);
+        }
+
+        /* Interactive Checklist (Roadmap) Section */
+        .roadmap-container {
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        .phase-card {
+            background: var(--bg-card);
+            backdrop-filter: blur(var(--glass-blur));
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: var(--shadow-premium);
+            transition: var(--transition-smooth);
+        }
+
+        .phase-card.completed-phase {
+            border-color: rgba(16, 185, 129, 0.4);
+            box-shadow: 0 10px 30px rgba(16, 185, 129, 0.1);
+        }
+
+        .phase-header {
+            padding: 1.5rem 2rem;
+            background: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            transition: var(--transition-smooth);
+        }
+
+        .phase-header:hover {
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .phase-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .phase-number {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            background: var(--primary-glow);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-family: var(--font-display);
+        }
+
+        .phase-card.completed-phase .phase-number {
+            background: rgba(16, 185, 129, 0.15);
+            border-color: rgba(16, 185, 129, 0.3);
+            color: var(--success);
+        }
+
+        .phase-title-group h3 {
+            font-family: var(--font-display);
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .phase-title-group p {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .phase-meta {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .phase-badge {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .phase-badge.phase-duration {
+            border-color: rgba(20, 184, 166, 0.2);
+            color: var(--secondary);
+        }
+
+        .phase-chevron {
+            color: var(--text-muted);
+            transition: transform 0.3s ease;
+        }
+
+        .phase-card.collapsed .phase-chevron {
+            transform: rotate(-90deg);
+        }
+
+        .phase-body {
+            padding: 1.5rem 2rem;
+            transition: max-height 0.3s ease;
+            max-height: 2000px;
+            overflow: hidden;
+        }
+
+        .phase-card.collapsed .phase-body {
+            max-height: 0;
+            padding: 0;
+            border: none;
+        }
+
+        /* Task list styling */
+        .task-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .task-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            transition: var(--transition-smooth);
+        }
+
+        .task-item:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.03);
+            transform: translateX(4px);
+        }
+
+        .task-item.checked {
+            border-color: rgba(16, 185, 129, 0.2);
+            background: rgba(16, 185, 129, 0.02);
+        }
+
+        .task-checkbox-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+            margin-top: 2px;
+        }
+
+        .task-checkbox {
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--text-muted);
+            border-radius: 6px;
+            outline: none;
+            cursor: pointer;
+            transition: var(--transition-smooth);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .task-checkbox:checked {
+            background: var(--success);
+            border-color: var(--success);
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+        }
+
+        .task-checkbox:checked::after {
+            content: "\f00c";
+            font-family: "Font Awesome 6 Free";
+            font-weight: 900;
+            color: white;
+            font-size: 11px;
+        }
+
+        .task-content {
+            flex: 1;
+        }
+
+        .task-label {
+            font-weight: 500;
+            font-size: 14.5px;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: var(--transition-smooth);
+        }
+
+        .task-item.checked .task-label {
+            color: var(--text-muted);
+            text-decoration: line-through;
+        }
+
+        .task-description {
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .task-meta-pills {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .task-pill {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-muted);
+            border: 1px solid var(--border-color);
+        }
+
+        .task-pill.pill-time {
+            color: var(--secondary);
+            border-color: rgba(20, 184, 166, 0.2);
+        }
+
+        .task-pill.pill-priority {
+            color: var(--accent);
+            border-color: rgba(168, 85, 247, 0.2);
+        }
+
+        .task-item-actions {
+            opacity: 0;
+            transition: var(--transition-smooth);
+        }
+
+        .task-item:hover .task-item-actions {
+            opacity: 1;
+        }
+
+        .task-delete-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            transition: var(--transition-smooth);
+        }
+
+        .task-delete-btn:hover {
+            color: var(--danger);
+        }
+
+        /* Task adding mechanism */
+        .add-task-box {
+            display: flex;
+            gap: 12px;
+            margin-top: 1.5rem;
+            background: rgba(255, 255, 255, 0.01);
+            border: 1px dashed var(--border-color);
+            padding: 1rem;
+            border-radius: 10px;
+        }
+
+        .task-input {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border-color);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            outline: none;
+            transition: var(--transition-smooth);
+        }
+
+        .task-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .task-hours-input {
+            width: 90px;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border-color);
+            color: white;
+            padding: 8px;
+            border-radius: 6px;
+            font-size: 14px;
+            outline: none;
+            text-align: center;
+        }
+
+        /* Database View Panel Layout */
+        .db-panel-container {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 1.5rem;
+            align-items: start;
+        }
+
+        @media (max-width: 860px) {
+            .db-panel-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .db-sidebar {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 550px;
+            overflow-y: auto;
+        }
+
+        .db-tab-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            color: var(--text-secondary);
+            padding: 10px 14px;
+            text-align: left;
+            cursor: pointer;
+            transition: var(--transition-smooth);
+            font-family: var(--font-display);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .db-tab-btn:hover {
+            background: rgba(255, 255, 255, 0.02);
+            color: var(--text-primary);
+        }
+
+        .db-tab-btn.active {
+            background: var(--primary-glow);
+            color: white;
+            border-color: rgba(99, 102, 241, 0.25);
+            font-weight: 600;
+        }
+
+        .db-tab-btn .badge-pk {
+            font-size: 8px;
+            background: rgba(245, 158, 11, 0.15);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            color: var(--warning);
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+
+        .db-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 2rem;
+            min-height: 550px;
+        }
+
+        .table-meta-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .table-title {
+            font-family: var(--font-display);
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .table-subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .sql-wrapper {
+            position: relative;
+            background: #05060b;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            margin: 1.5rem 0;
+            overflow: hidden;
+        }
+
+        .sql-header {
+            background: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 8px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sql-lang {
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+        }
+
+        .sql-copy-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 13px;
+            transition: var(--transition-smooth);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .sql-copy-btn:hover {
+            color: white;
+        }
+
+        .sql-code {
+            padding: 1.5rem;
+            overflow-x: auto;
+            color: #a5b4fc;
+            font-family: var(--font-mono);
+            font-size: 13.5px;
+            line-height: 1.5;
+            white-space: pre;
+        }
+
+        .table-cols-list {
+            margin-top: 1.5rem;
+        }
+
+        .table-cols-title {
+            font-family: var(--font-display);
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--text-primary);
+        }
+
+        .table-cols-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        @media (max-width: 600px) {
+            .table-cols-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .col-desc-card {
+            background: rgba(0, 0, 0, 0.15);
+            border: 1px solid var(--border-color);
+            padding: 10px 14px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .col-name-type {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+
+        .col-name {
+            font-family: var(--font-mono);
+            font-weight: 600;
+            font-size: 13.5px;
+            color: white;
+        }
+
+        .col-type {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--secondary);
+            background: var(--secondary-glow);
+            padding: 1px 6px;
+            border-radius: 4px;
+        }
+
+        .col-type.pk-type {
+            color: var(--warning);
+            background: rgba(245, 158, 11, 0.1);
+        }
+
+        .col-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* Architecture Diagram Elements */
+        .diagram-container {
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            align-items: center;
+            padding: 2rem;
+            background: rgba(0,0,0,0.15);
+            border-radius: 16px;
+            border: 1px solid var(--border-color);
+        }
+
+        .diagram-row {
+            display: flex;
+            gap: 3rem;
+            width: 100%;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .diagram-node {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            padding: 1.25rem 2rem;
+            border-radius: 12px;
+            text-align: center;
+            min-width: 200px;
+            box-shadow: var(--shadow-premium);
+            position: relative;
+        }
+
+        .diagram-node.active-node {
+            border-color: var(--primary);
+            background: var(--primary-glow);
+            box-shadow: 0 0 20px var(--primary-glow);
+        }
+
+        .diagram-node h4 {
+            font-family: var(--font-display);
+            font-size: 15px;
+            margin-bottom: 4px;
+            color: white;
+        }
+
+        .diagram-node p {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .diagram-connector {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 18px;
+            position: relative;
+        }
+
+        .diagram-connector.vertical {
+            height: 40px;
+        }
+
+        .diagram-connector i {
+            animation: bounce 2s infinite alternate;
+        }
+
+        @keyframes bounce {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(6px); }
+        }
+
+        .sync-flow-box {
+            display: grid;
+            grid-template-columns: 1fr 60px 1fr;
+            gap: 1rem;
+            align-items: center;
+            margin-top: 1.5rem;
+        }
+
+        /* General UI components (alert, lists, quotes) */
+        .premium-alert {
+            background: rgba(99, 102, 241, 0.05);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-left: 4px solid var(--primary);
+            padding: 1.25rem 1.5rem;
+            border-radius: 8px;
+            margin: 1.5rem 0;
+            display: flex;
+            gap: 14px;
+            align-items: flex-start;
+        }
+
+        .premium-alert.alert-warning {
+            background: rgba(245, 158, 11, 0.03);
+            border-color: rgba(245, 158, 11, 0.15);
+            border-left-color: var(--warning);
+        }
+
+        .premium-alert.alert-success {
+            background: rgba(16, 185, 129, 0.03);
+            border-color: rgba(16, 185, 129, 0.15);
+            border-left-color: var(--success);
+        }
+
+        .premium-alert i {
+            font-size: 18px;
+            margin-top: 2px;
+        }
+
+        .premium-alert.alert-warning i { color: var(--warning); }
+        .premium-alert.alert-success i { color: var(--success); }
+        .premium-alert i { color: var(--primary); }
+
+        .alert-content h5 {
+            font-family: var(--font-display);
+            font-size: 15px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            color: var(--text-primary);
+        }
+
+        .alert-content p {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* Toast notifications */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: rgba(18, 20, 32, 0.95);
+            border: 1px solid var(--success);
+            padding: 12px 24px;
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+            font-weight: 600;
+            z-index: 1000;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        /* Native Confetti Animation Layer */
+        #confetti-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 999;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="confetti-canvas"></canvas>
+
+    <div class="container">
+        <!-- Dashboard Header -->
+        <header>
+            <div class="logo-area">
+                <div class="logo-icon">
+                    <i class="fa-solid fa-laptop-medical"></i>
+                </div>
+                <div class="logo-text">
+                    <h1>MediFlow SaaS</h1>
+                    <p>Production Architecture & Roadmap</p>
+                </div>
+            </div>
+            <div class="header-controls">
+                <button class="btn btn-primary" onclick="triggerConfetti()">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i> Spark Celebrate
+                </button>
+                <button class="theme-toggle" onclick="toggleTheme()" title="Switch Design Theme">
+                    <i class="fa-solid fa-circle-half-stroke"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Dynamic Progress Hero -->
+        <div class="hero-banner">
+            <div class="hero-text">
+                <div class="hero-badge">
+                    <i class="fa-solid fa-shield-halved"></i> Cloud Sync + Multi-Store Enabled
+                </div>
+                <h2>Interactive Project Roadmap</h2>
+                <p>Welcome, Super User! We are restructuring <strong>MediFlow</strong> into a premium offline-first billing platform. Cashiers & Owners log in with secure email & password credentials. Data synchronizes to Supabase in the background, complete with local SQLite caching and automatic receipt thermal printing support!</p>
+                
+                <div class="meta-stats">
+                    <div class="meta-stat-item">
+                        <span class="meta-stat-label">System Architecture</span>
+                        <span class="meta-stat-val highlight">100K+ DAU Scalable</span>
+                    </div>
+                    <div class="meta-stat-item">
+                        <span class="meta-stat-label">Active Database</span>
+                        <span class="meta-stat-val"><i class="fa-solid fa-database" style="color:#3ecf8e"></i> Supabase Cloud</span>
+                    </div>
+                    <div class="meta-stat-item">
+                        <span class="meta-stat-label">Receipt Printing</span>
+                        <span class="meta-stat-val"><i class="fa-solid fa-print"></i> ESC/POS Thermal</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dashboard Progress Visualizer -->
+            <div class="hero-progress">
+                <div class="progress-ring-container">
+                    <svg width="120" height="120">
+                        <circle stroke="rgba(255,255,255,0.05)" stroke-width="10" fill="transparent" r="50" cx="60" cy="60"/>
+                        <circle id="progress-circle" class="progress-ring-circle" stroke="url(#progressGradient)" stroke-width="10" stroke-dasharray="314.16" stroke-dashoffset="314.16" stroke-linecap="round" fill="transparent" r="50" cx="60" cy="60"/>
+                        <defs>
+                            <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="var(--primary)"/>
+                                <stop offset="100%" stop-color="var(--secondary)"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <div id="progress-percentage" class="progress-value">0%</div>
+                </div>
+                <div class="progress-details">
+                    <div class="progress-label">
+                        <span>Roadmap Completion Status</span>
+                        <span id="progress-fraction">0 / 0 Tasks</span>
+                    </div>
+                    <div class="progress-bar-linear">
+                        <div id="progress-bar-fill" class="progress-fill"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="tabs-container">
+            <button class="tab-btn active" onclick="switchTab(event, 'tab-roadmap')">
+                <i class="fa-solid fa-list-check"></i> Roadmap & Tasks
+            </button>
+            <button class="tab-btn" onclick="switchTab(event, 'tab-schema')">
+                <i class="fa-solid fa-database"></i> Supabase SQL Schema
+            </button>
+            <button class="tab-btn" onclick="switchTab(event, 'tab-architecture')">
+                <i class="fa-solid fa-network-wired"></i> Architecture & Sync
+            </button>
+            <button class="tab-btn" onclick="switchTab(event, 'tab-printing')">
+                <i class="fa-solid fa-print"></i> Thermal Printer Specs
+            </button>
+        </div>
+
+        <!-- TAB 1: ROADMAP & TASKS (INTERACTIVE) -->
+        <div id="tab-roadmap" class="tab-panel active">
+            <div class="roadmap-container" id="roadmap-accordion">
+                <!-- Phases will be dynamically populated here via Javascript with localstorage saving support -->
+            </div>
+        </div>
+
+        <!-- TAB 2: SUPABASE SQL SCHEMA -->
+        <div id="tab-schema" class="tab-panel">
+            <div class="db-panel-container">
+                <!-- Table Selection Sidebar -->
+                <div class="db-sidebar" id="db-sidebar-menu">
+                    <!-- Buttons injected via javascript -->
+                </div>
+                <!-- SQL Code display pane -->
+                <div class="db-content" id="db-content-pane">
+                    <!-- Table SQL Injected Here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 3: ARCHITECTURE & SYNC -->
+        <div id="tab-architecture" class="tab-panel">
+            <div class="info-grid">
+                <div class="card">
+                    <div class="card-title">
+                        <i class="fa-solid fa-cloud-arrow-up"></i> Multi-Tenant Isolation
+                    </div>
+                    <p>To support thousands of medical stores on a single server, each store's database assets are completely isolated from others. Security filters are enforced directly inside the PostgreSQL layer using <strong>Row Level Security (RLS) policies</strong>. Even if cashier devices communicate directly with the database, they can never inspect or alter data belonging to another store.</p>
+                    <div class="premium-alert">
+                        <i class="fa-solid fa-lock"></i>
+                        <div class="alert-content">
+                            <h5>Row-Level Security (RLS) Rules</h5>
+                            <p>All client transactions run standard parameterized selects. PosgreSQL implicitly appends a security clause: <code>WHERE store_id IN (SELECT get_user_store_ids())</code>. Secure by design at the core engine level!</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <i class="fa-solid fa-network-wired"></i> Offline Sync Engine
+                    </div>
+                    <p>MediFlow incorporates an **outbox-pattern offline queue**. If internet connectivity fluctuates in the store, billing proceeds uninterrupted on the local SQLite cache. Modified items, payments, and generated invoices are queued in an offline sync log.</p>
+                    <div class="premium-alert alert-success">
+                        <i class="fa-solid fa-circle-check"></i>
+                        <div class="alert-content">
+                            <h5>"Server Wins" Conflict Policy</h5>
+                            <p>Since cashiers operate within separate stores, global conflict frequencies are close to zero. When sync resumes, conflicts are automatically resolved via a simple Server-Wins timestamp comparison strategy.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Graphical Diagram Representation -->
+            <div class="diagram-container">
+                <h3 style="font-family:var(--font-display); margin-bottom: 0.5rem;">Offline-First Visual Data Flow</h3>
+                <p style="color:var(--text-secondary); text-align:center; max-width:700px; margin-bottom:2rem; font-size:14px;">Every query evaluates locally on the SQLite cache inside the Tauri wrapper. An asynchronous transaction supervisor flushes local changes upward to Supabase once a heartbeat detects a healthy gateway.</p>
+                
+                <div class="diagram-row">
+                    <div class="diagram-node active-node">
+                        <h4>🛒 Cashier Billing UI</h4>
+                        <p>Next.js Core Bundle inside Tauri</p>
+                    </div>
+                    <div class="diagram-connector">
+                        <i class="fa-solid fa-arrow-right"></i>
+                        <span style="font-size:9px; font-weight:700; color:var(--text-muted)">Fast Response</span>
+                    </div>
+                    <div class="diagram-node">
+                        <h4>💾 Local DB Cache</h4>
+                        <p>SQLite via Tauri plugin</p>
+                    </div>
+                    <div class="diagram-connector">
+                        <i class="fa-solid fa-arrow-right"></i>
+                        <span style="font-size:9px; font-weight:700; color:var(--text-muted)">Outbox Log</span>
+                    </div>
+                    <div class="diagram-node active-node">
+                        <h4>🔄 Synchronizer</h4>
+                        <p>Network Monitor & Queue Scheduler</p>
+                    </div>
+                </div>
+
+                <div class="diagram-connector vertical">
+                    <i class="fa-solid fa-arrow-down"></i>
+                    <span style="font-size:10px; font-weight:700; color:var(--secondary)">Heartbeat Sync (REST/WS)</span>
+                </div>
+
+                <div class="diagram-row">
+                    <div class="diagram-node active-node" style="border-color: var(--secondary)">
+                        <h4>🐘 Supabase Postgres</h4>
+                        <p>Global multi-tenant Cloud DB</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 4: THERMAL PRINTER INTEGRATION -->
+        <div id="tab-printing" class="tab-panel">
+            <div class="card" style="margin-bottom: 1.5rem;">
+                <div class="card-title">
+                    <i class="fa-solid fa-print"></i> Thermal Printing Strategies for Tauri
+                </div>
+                <p>Medical billing applications must process prints within seconds to maximize checkout speeds. Because MediFlow is structured inside a native Tauri wrapper on Windows, we have three highly reliable mechanisms to interact with receipt printers:</p>
+                
+                <div class="premium-alert" style="margin: 1.5rem 0 1rem 0;">
+                    <i class="fa-solid fa-desktop" style="color:var(--secondary)"></i>
+                    <div class="alert-content">
+                        <h5>Method A: Standard Web Print (CSS Paginated Layouts)</h5>
+                        <p>Implement print layouts inside Next.js using regular HTML/CSS styled specifically with 80mm/58mm boundary limits. Trigger <code>window.print()</code> directly from the frontend interface. The OS spooler handles the native system dialog. Clean, robust, and requires zero extra plugin architecture.</p>
+                    </div>
+                </div>
+
+                <div class="premium-alert alert-warning" style="margin: 1rem 0 1.5rem 0;">
+                    <i class="fa-solid fa-microchip"></i>
+                    <div class="alert-content">
+                        <h5>Method B: Tauri Rust Native Printer Spooling</h5>
+                        <p>Install and compile <code>tauri-plugin-printer</code>. This enables direct, raw communication with native Windows drivers (e.g. XP-80, Epson TM, TVS). It completely bypasses standard print popups, printing silently and instantly upon invoice finalization.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="info-grid">
+                <div class="card">
+                    <div class="card-title"><i class="fa-solid fa-code"></i> Standard 80mm Print Layout Spec</div>
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:1rem;">Add this specialized media style sheet within your client template directory for clean receipt formatting:</p>
+                    <div class="sql-wrapper">
+                        <div class="sql-header">
+                            <span class="sql-lang">CSS Stylesheet</span>
+                            <button class="sql-copy-btn" onclick="copySnippet('css-print-spec')"><i class="fa-solid fa-copy"></i> Copy Code</button>
+                        </div>
+                        <div class="sql-code" id="css-print-spec" style="font-size:11px;">@media print {
+  @page {
+    size: 80mm auto; /* Fixed 80mm width, dynamic height */
+    margin: 0;       /* Eliminate standard header/footer text */
+  }
+  body {
+    width: 80mm;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #000;
+    background: #fff;
+    padding: 4mm;
+  }
+  .receipt-divider {
+    border-top: 1px dashed #000;
+    margin: 2mm 0;
+  }
+  .text-right { text-align: right; }
+}</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><i class="fa-solid fa-gear"></i> Printer DB Storage Configuration</div>
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:1rem;">Save user preferences in the <code>app_settings</code> table table-side so that each cash registry retains distinct printer bindings:</p>
+                    <div class="sql-wrapper">
+                        <div class="sql-header">
+                            <span class="sql-lang">SQL Payload Example</span>
+                            <button class="sql-copy-btn" onclick="copySnippet('sql-printer-pref')"><i class="fa-solid fa-copy"></i> Copy SQL</button>
+                        </div>
+                        <div class="sql-code" id="sql-printer-pref" style="font-size:11px;">-- Inject default printer preferences inside store-specific settings
+INSERT INTO app_settings (store_id, key, value)
+VALUES 
+  ('your-store-uuid-here', 'printer_type', 'thermal_80mm'),
+  ('your-store-uuid-here', 'printer_target_name', 'XP-80 Receipt Printer'),
+  ('your-store-uuid-here', 'printer_auto_print', 'true');</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- UI Toast Notification Alert -->
+    <div id="ui-toast" class="toast">
+        <i class="fa-solid fa-circle-check"></i>
+        <span id="toast-message">Success message here!</span>
+    </div>
+
+    <!-- Interactive JS Core Logic -->
+    <script>
+        // Core Roadmap Phase Datastore containing customized structured activities
+        let roadmapData = [
+            {
+                phaseId: 1,
+                title: "Supabase Setup & Auth Core",
+                description: "Establish cloud instance, compile standard relational tables, and instantiate user logins.",
+                duration: "Week 1-2",
+                tasks: [
+                    { id: "p1-t1", label: "Provision Supabase Cloud Instance", desc: "Create new cluster under Supabase project dashboard and fetch API tokens & Postgres credentials.", time: "2 hrs", priority: "critical", checked: true },
+                    { id: "p1-t2", label: "Execute Database Schema Migrations", desc: "Run core SQL structures (stores, store_users, items, parties, transactions) on Supabase PostgreSQL query manager.", time: "4 hrs", priority: "critical", checked: true },
+                    { id: "p1-t3", label: "Enforce Row Level Security (RLS)", desc: "Enable RLS for multi-tenant protection. Implement tenant policies so client queries only yield items matched to their store.", time: "6 hrs", priority: "high", checked: false },
+                    { id: "p1-t4", label: "Email / Password Login & Store Selection", desc: "Build auth flow. Cache the JWT securely in NextJS client context and prompt user to select active store if linked to multiple.", time: "8 hrs", priority: "high", checked: false },
+                    { id: "p1-t5", label: "Super Admin Store Creation API", desc: "Build admin action within the main desktop app to let Super Admin add new stores, issue default owner accounts, and configure permissions.", time: "6 hrs", priority: "medium", checked: false }
+                ]
+            },
+            {
+                phaseId: 2,
+                title: "Database Abstraction Layer & Page Migrations",
+                description: "Integrate Supabase SDK and refactor existing billing client pages to query dynamic cloud databases.",
+                duration: "Week 3-5",
+                tasks: [
+                    { id: "p2-t1", label: "Establish DB Service Layer Abstraction", desc: "Create unified entry point for queries. Introduce repository handlers so DB transactions use Supabase clients when online.", time: "8 hrs", priority: "high", checked: false },
+                    { id: "p2-t2", label: "Refactor Dashboard Statistics & Sales Panels", desc: "Rewrite aggregates on Dashboard.tsx and items list pagination inside Items.tsx to pull dynamically from cloud DB.", time: "6 hrs", priority: "medium", checked: false },
+                    { id: "p2-t3", label: "Rebuild SaleInvoice & PurchaseBill Queries", desc: "Refactor complex invoice workflows in SaleInvoice.tsx (1136 lines) and PurchaseBill.tsx to process inserts and updates through Supabase transaction logic.", time: "16 hrs", priority: "high", checked: false },
+                    { id: "p2-t4", label: "Migrate Party Special Rates & Inventory Auditing", desc: "Refactor Parties.tsx and custom price mappings under party_special_rates to support instant calculations during billing.", time: "8 hrs", priority: "medium", checked: false },
+                    { id: "p2-t5", label: "Integrate Sidebar Settings & User context", desc: "Ensure active store branding logo, active store title, cashier role limitations, and logout are globally reactive.", time: "4 hrs", priority: "low", checked: false }
+                ]
+            },
+            {
+                phaseId: 3,
+                title: "Thermal Printer Integration & Store Configuration",
+                description: "Implement direct receipts and invoice printing via desktop spooler or browser system print dialogs.",
+                duration: "Week 6",
+                tasks: [
+                    { id: "p3-t1", label: "Develop CSS print stylesheets for 80mm & 58mm", desc: "Design dedicated printer-friendly CSS layouts with specific font sizing and dashed receipt lines for clean thermal printing.", time: "4 hrs", priority: "high", checked: false },
+                    { id: "p3-t2", label: "Implement printing settings schema in DB", desc: "Save configurations like printer target, paper size, auto-print toggles inside the per-store app_settings database.", time: "4 hrs", priority: "medium", checked: false },
+                    { id: "p3-t3", label: "Integrate automatic receipt printing in Tauri client", desc: "Wire print commands directly to the invoice submission button. Trigger printer dialog automatically once the sale is confirmed.", time: "6 hrs", priority: "high", checked: false }
+                ]
+            },
+            {
+                phaseId: 4,
+                title: "Offline Sync Engine (Outbox Strategy)",
+                description: "Build robust system to log local transactions to SQLite when offline and push them to cloud on recovery.",
+                duration: "Week 7-8",
+                tasks: [
+                    { id: "p4-t1", label: "Create SQLite Sync Outbox Queue Schema", desc: "Define the local synchronization table mirror inside SQLite to record offline modifications (sync_log table).", time: "6 hrs", priority: "high", checked: false },
+                    { id: "p4-t2", label: "Develop Online / Offline Indicator Widget", desc: "Create status component in navigation bar tracking system heartbeat and alert user when offline operations are active.", time: "4 hrs", priority: "low", checked: false },
+                    { id: "p4-t3", label: "Build Outbox Sync Background Supervisor", desc: "Implement scheduled task checking client network status. Automatically push all pending SQLite changes to Supabase upon recovery.", time: "12 hrs", priority: "high", checked: false },
+                    { id: "p4-t4", label: "Integrate Server-Wins Conflict Resolver", desc: "Write conflict resolution script. In case of matching record updates, apply the cloud server's record while retaining client outbox logs for safety.", time: "8 hrs", priority: "medium", checked: false }
+                ]
+            },
+            {
+                phaseId: 5,
+                title: "In-App Admin Control & Release Polish",
+                description: "Deliver super-user management pages directly inside the desktop interface, verify RLS, and perform stress testing.",
+                duration: "Week 9-10",
+                tasks: [
+                    { id: "p5-t1", label: "Super Admin Control Dashboard", desc: "Design UI dashboard inside settings tab for super user to create stores, change billing structures, and audit connections.", time: "8 hrs", priority: "medium", checked: false },
+                    { id: "p5-t2", label: "Cashier Management Panel (Store Owner)", desc: "Build clean, user-friendly cashier management screen letting owners invite cashiers, reset passwords, and audit receipts.", time: "6 hrs", priority: "medium", checked: false },
+                    { id: "p5-t3", label: "Enforce API Rate Limiting & RLS Audits", desc: "Configure Supabase connection rate limits. Run comprehensive security script asserting that User B cannot query Store A's invoices.", time: "6 hrs", priority: "high", checked: false },
+                    { id: "p5-t4", label: "Execute SQLite to Supabase Initial Migration Data", desc: "Create import script to load existing production data (~1MB SQLite file) straight into the live SaaS Supabase instance.", time: "6 hrs", priority: "high", checked: false }
+                ]
+            },
+            {
+                phaseId: 6,
+                title: "React Native Mobile App (Future Extension)",
+                description: "Extend multi-tenant billing straight to mobile devices for store owners to audit invoices and track stocks.",
+                duration: "Week 11+",
+                tasks: [
+                    { id: "p6-t1", label: "React Native Project Base Scaffolding", desc: "Configure mobile monorepo client structure sharing schemas and validations with NextJS core desktop.", time: "8 hrs", priority: "medium", checked: false },
+                    { id: "p6-t2", label: "Mobile Authentication & Store Selection", desc: "Build mobile login screens linking to Supabase Auth system and load selected store state.", time: "6 hrs", priority: "medium", checked: false },
+                    { id: "p6-t3", label: "Rebuild POS Billing Layout for Mobile Sheets", desc: "Design mobile-friendly invoice calculator, scanning capability using native camera feed, and list interfaces.", time: "16 hrs", priority: "high", checked: false }
+                ]
+            }
+        ];
+
+        // SQL table structures
+        let databaseTables = [
+            {
+                name: "stores",
+                subtitle: "Master store registry (Super Admin controls this)",
+                columns: [
+                    { name: "id", type: "uuid (PK)", desc: "Unique identifier, auto-generated gen_random_uuid()" },
+                    { name: "name", type: "text", desc: "The trade name of the medical store (e.g. Raghuveer Medical)" },
+                    { name: "created_by", type: "uuid (FK)", desc: "Points to auth.users representing the creator super-admin" },
+                    { name: "gstin", type: "text", desc: "GST Identification Number of the enterprise" },
+                    { name: "address", type: "text", desc: "Physical street address of the retail facility" },
+                    { name: "phone", type: "text", desc: "Store primary business helpline number" },
+                    { name: "logo_url", type: "text", desc: "Cloud storage link to store brand image" },
+                    { name: "plan", type: "text", desc: "Subscription tier - defaults to 'basic' (e.g. basic, pro)" },
+                    { name: "is_active", type: "boolean", desc: "Active flag. Suspended stores are denied access" }
+                ],
+                sql: `CREATE TABLE stores (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        text NOT NULL,
+    created_by  uuid REFERENCES auth.users(id),   -- super-admin link
+    gstin       text,
+    address     text,
+    phone       text,
+    logo_url    text,
+    plan        text NOT NULL DEFAULT 'basic',     -- basic / pro / enterprise
+    is_active   boolean NOT NULL DEFAULT true,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_stores_created_by ON stores(created_by);
+CREATE INDEX idx_stores_active ON stores(is_active) WHERE is_active = true;`
+            },
+            {
+                name: "store_users",
+                subtitle: "Matches staff accounts with store scopes & authority levels",
+                columns: [
+                    { name: "id", type: "uuid (PK)", desc: "Unique registry identification" },
+                    { name: "store_id", type: "uuid (FK)", desc: "Binds user to target tenant store record" },
+                    { name: "user_id", type: "uuid (FK)", desc: "Ties directly into Supabase Auth users database" },
+                    { name: "role", type: "text", desc: "Permission role (owner, cashier, viewer)" },
+                    { name: "display_name", type: "text", desc: "Personal name displayed inside the client application header" },
+                    { name: "is_active", type: "boolean", desc: "Quick deactivation flag for active cashier access" }
+                ],
+                sql: `CREATE TABLE store_users (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id     uuid NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    user_id      uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    role         text NOT NULL DEFAULT 'cashier'
+                 CHECK (role IN ('owner', 'cashier', 'viewer')),
+    display_name text NOT NULL,
+    is_active    boolean NOT NULL DEFAULT true,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    
+    UNIQUE(store_id, user_id)
+);
+
+CREATE INDEX idx_store_users_store ON store_users(store_id);
+CREATE INDEX idx_store_users_user ON store_users(user_id);`
+            },
+            {
+                name: "items",
+                subtitle: "Products & medicines catalog (scoped per store)",
+                columns: [
+                    { name: "id", type: "uuid (PK)", desc: "Unique pharmaceutical product key" },
+                    { name: "store_id", type: "uuid (FK)", desc: "Matches product catalog to active tenant store" },
+                    { name: "name", type: "text", desc: "Item display name (Unique index per store)" },
+                    { name: "hsn", type: "text", desc: "Harmonized System of Nomenclature code for tax parsing" },
+                    { name: "unit", type: "text", desc: "Inventory measurement unit (e.g. TAB, STRIP, BOX)" },
+                    { name: "sale_price", type: "numeric", desc: "Active selling price of a single unit" },
+                    { name: "purchase_price", type: "numeric", desc: "Standard supply procurement price" },
+                    { name: "current_stock", type: "numeric", desc: "Live physical stock remaining in warehouse" },
+                    { name: "min_stock", type: "numeric", desc: "Reorder notification limit for warnings" },
+                    { name: "tax_rate", type: "numeric", desc: "Applicable tax rate percentage (e.g., 18.00)" }
+                ],
+                sql: `CREATE TABLE items (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id        uuid NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    name            text NOT NULL,
+    hsn             text,
+    unit            text DEFAULT 'TAB',
+    sale_price      numeric(12,2) DEFAULT 0,
+    purchase_price  numeric(12,2) DEFAULT 0,
+    opening_stock   numeric(12,2) DEFAULT 0,
+    current_stock   numeric(12,2) DEFAULT 0,
+    min_stock       numeric(12,2) DEFAULT 0,
+    category        text,
+    tax_rate        numeric(5,2) DEFAULT 0,
+    discount        numeric(5,2) DEFAULT 0,
+    inclusive_tax   boolean DEFAULT false,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+
+    UNIQUE(store_id, name)
+);
+
+CREATE INDEX idx_items_store ON items(store_id);
+CREATE INDEX idx_items_store_name ON items(store_id, name);
+CREATE INDEX idx_items_low_stock ON items(store_id, current_stock, min_stock)
+    WHERE current_stock <= min_stock;`
+            },
+            {
+                name: "parties",
+                subtitle: "Retail customers and vendor supplier records",
+                columns: [
+                    { name: "id", type: "uuid (PK)", desc: "Unique account reference key" },
+                    { name: "store_id", type: "uuid (FK)", desc: "Links client directory to active store scope" },
+                    { name: "name", type: "text", desc: "Full name / business name (Unique per store)" },
+                    { name: "phone", type: "text", desc: "Mobile contact number for invoicing SMS" },
+                    { name: "type", type: "text", desc: "Classification: 'customer' or 'vendor'" },
+                    { name: "opening_balance", type: "numeric", desc: "Initial ledger balance mapping dues" }
+                ],
+                sql: `CREATE TABLE parties (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id        uuid NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    name            text NOT NULL,
+    phone           text,
+    gstin           text,
+    address         text,
+    type            text DEFAULT 'customer'
+                    CHECK (type IN ('customer', 'vendor')),
+    opening_balance numeric(12,2) DEFAULT 0,
+    is_active       boolean NOT NULL DEFAULT true,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+
+    UNIQUE(store_id, name)
+);
+
+CREATE INDEX idx_parties_store ON parties(store_id);
+CREATE INDEX idx_parties_store_name ON parties(store_id, name);`
+            },
+            {
+                name: "transactions",
+                subtitle: "Master sales invoices and procurement bills",
+                columns: [
+                    { name: "id", type: "uuid (PK)", desc: "Unique database receipt index" },
+                    { name: "store_id", type: "uuid (FK)", desc: "Ties transaction to the store entity" },
+                    { name: "invoice_no", type: "text", desc: "Display invoice identification (Unique per store & type)" },
+                    { name: "date", type: "timestamptz", desc: "Timestamp when the invoice was generated" },
+                    { name: "party_id", type: "uuid (FK)", desc: "Points to custom record inside parties table" },
+                    { name: "total_amount", type: "numeric", desc: "Calculated gross invoice total including taxes" },
+                    { name: "payment_type", type: "text", desc: "Payment mode (cash, credit, upi, bank)" },
+                    { name: "status", type: "text", desc: "Payment state (paid, partial, unpaid)" }
+                ],
+                sql: `CREATE TABLE transactions (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id        uuid NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    invoice_no      text,
+    date            timestamptz NOT NULL DEFAULT now(),
+    party_id        uuid REFERENCES parties(id) ON DELETE SET NULL,
+    total_amount    numeric(12,2) NOT NULL DEFAULT 0,
+    paid_amount     numeric(12,2) DEFAULT 0,
+    balance_due     numeric(12,2) DEFAULT 0,
+    type            text NOT NULL CHECK (type IN ('sale', 'purchase')),
+    payment_type    text DEFAULT 'cash'
+                    CHECK (payment_type IN ('cash', 'credit', 'upi', 'bank')),
+    status          text DEFAULT 'paid'
+                    CHECK (status IN ('paid', 'partial', 'unpaid')),
+    created_by      uuid REFERENCES auth.users(id),  -- Creator cashier audit link
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+
+    UNIQUE(store_id, invoice_no, type)
+);
+
+CREATE INDEX idx_txns_store ON transactions(store_id);
+CREATE INDEX idx_txns_store_date ON transactions(store_id, date DESC);
+CREATE INDEX idx_txns_store_invoice ON transactions(store_id, invoice_no);`
+            },
+            {
+                name: "transaction_items",
+                subtitle: "Specific detailed product lines inside transactions",
+                columns: [
+                    { name: "id", type: "uuid (PK)", desc: "Unique item line item index" },
+                    { name: "txn_id", type: "uuid (FK)", desc: "Parent transaction bill pointer" },
+                    { name: "item_id", type: "uuid (FK)", desc: "Linked item reference key" },
+                    { name: "quantity", type: "numeric", desc: "Total quantity traded inside invoice" },
+                    { name: "price", type: "numeric", desc: "Trading price locked during transaction" },
+                    { name: "discount_pct", type: "numeric", desc: "Item-level discount percentage applied" },
+                    { name: "tax_pct", type: "numeric", desc: "Locked item tax rate fraction" },
+                    { name: "batch_no", type: "text", desc: "Batch number for tracking pharmaceutical items" }
+                ],
+                sql: `CREATE TABLE transaction_items (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    txn_id          uuid NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    item_id         uuid REFERENCES items(id) ON DELETE SET NULL,
+    item_name       text,
+    quantity        numeric(12,3) NOT NULL DEFAULT 0,
+    unit            text,
+    price           numeric(12,2) NOT NULL DEFAULT 0,
+    amount          numeric(12,2) DEFAULT 0,
+    discount_pct    numeric(5,2) DEFAULT 0,
+    discount_amt    numeric(12,2) DEFAULT 0,
+    tax_pct         numeric(5,2) DEFAULT 0,
+    tax_amt         numeric(12,2) DEFAULT 0,
+    batch_no        text,
+    expiry_date     text
+);
+
+CREATE INDEX idx_txn_items_txn ON transaction_items(txn_id);
+CREATE INDEX idx_txn_items_item ON transaction_items(item_id);`
+            },
+            {
+                name: "sync_log",
+                subtitle: "Offline synchronization tracking record queue",
+                columns: [
+                    { name: "id", type: "uuid (PK)", desc: "Operation identification reference" },
+                    { name: "store_id", type: "uuid (FK)", desc: "Links operation to store partition context" },
+                    { name: "table_name", type: "text", desc: "Targeted entity table (e.g. items, transactions)" },
+                    { name: "operation", type: "text", desc: "Database state event (INSERT, UPDATE, DELETE)" },
+                    { name: "payload", type: "jsonb", desc: "Modified database fields mapped in JSON" },
+                    { name: "synced_at", type: "timestamptz", desc: "Cloud transmission record. Null if pending offline" }
+                ],
+                sql: `CREATE TABLE sync_log (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id    uuid NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    device_id   text NOT NULL,
+    table_name  text NOT NULL,
+    record_id   uuid NOT NULL,
+    operation   text NOT NULL CHECK (operation IN ('INSERT', 'UPDATE', 'DELETE')),
+    payload     jsonb,
+    synced_at   timestamptz,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    version     bigint NOT NULL DEFAULT 1,
+    client_ts   timestamptz NOT NULL  -- device clock timestamp
+);
+
+CREATE INDEX idx_sync_log_store_pending ON sync_log(store_id, synced_at)
+    WHERE synced_at IS NULL;`
+            }
+        ];
+
+        // Active State Manager
+        let currentActiveTableIndex = 0;
+
+        // Initialize App on load
+        window.addEventListener('DOMContentLoaded', () => {
+            loadSavedTasks();
+            renderRoadmap();
+            renderDatabaseSidebar();
+            renderDatabaseContent();
+            updateGlobalProgress();
+        });
+
+        // Theme switching handler
+        function toggleTheme() {
+            const currentTheme = document.body.getAttribute('data-theme');
+            if (currentTheme === 'warm') {
+                document.body.removeAttribute('data-theme');
+                showToast("Deep space theme active!");
+            } else {
+                document.body.setAttribute('data-theme', 'warm');
+                showToast("Warm neon theme active!");
+            }
+        }
+
+        // Tab selection handler
+        function switchTab(evt, tabId) {
+            document.querySelectorAll('.tab-panel').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.getElementById(tabId).classList.add('active');
+            evt.currentTarget.classList.add('active');
+        }
+
+        // LocalStorage Task Loader
+        function loadSavedTasks() {
+            const savedState = localStorage.getItem('mediflow-saas-tasks');
+            if (savedState) {
+                try {
+                    const parsed = JSON.parse(savedState);
+                    roadmapData.forEach(phase => {
+                        phase.tasks.forEach(task => {
+                            if (parsed[task.id] !== undefined) {
+                                task.checked = parsed[task.id];
+                            }
+                        });
+                    });
+                } catch(e) {
+                    console.error("Could not parse saved task progress.");
+                }
+            }
+        }
+
+        // LocalStorage Task Saver
+        function saveTaskProgress() {
+            const progressObject = {};
+            roadmapData.forEach(phase => {
+                phase.tasks.forEach(task => {
+                    progressObject[task.id] = task.checked;
+                });
+            });
+            localStorage.setItem('mediflow-saas-tasks', JSON.stringify(progressObject));
+            updateGlobalProgress();
+        }
+
+        // Circular & linear stats calculator
+        function updateGlobalProgress() {
+            let totalTasks = 0;
+            let completedTasks = 0;
+
+            roadmapData.forEach(phase => {
+                phase.tasks.forEach(task => {
+                    totalTasks++;
+                    if (task.checked) completedTasks++;
+                });
+            });
+
+            const percentage = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+            
+            // Update linear progress bar
+            document.getElementById('progress-bar-fill').style.width = percentage + "%";
+            document.getElementById('progress-fraction').textContent = `${completedTasks} / ${totalTasks} Tasks`;
+            document.getElementById('progress-percentage').textContent = percentage + "%";
+
+            // Update circular progress svg ring
+            const circle = document.getElementById('progress-circle');
+            const radius = circle.r.baseVal.value;
+            const circumference = radius * 2 * Math.PI;
+            const offset = circumference - (percentage / 100) * circumference;
+            circle.style.strokeDashoffset = offset;
+
+            // Check if user has finished everything!
+            if (percentage === 100 && totalTasks > 0) {
+                triggerConfetti();
+                showToast("Incredible! You have marked all system goals completed!");
+            }
+        }
+
+        // Render interactive roadmap accordion
+        function renderRoadmap() {
+            const container = document.getElementById('roadmap-accordion');
+            container.innerHTML = "";
+
+            roadmapData.forEach((phase) => {
+                const phaseCompleted = phase.tasks.every(t => t.checked);
+                const phaseCard = document.createElement('div');
+                phaseCard.className = `phase-card ${phaseCompleted ? 'completed-phase' : ''}`;
+                phaseCard.id = `phase-card-${phase.phaseId}`;
+
+                // Calculate completed task count inside current phase
+                const completedCount = phase.tasks.filter(t => t.checked).length;
+                
+                phaseCard.innerHTML = `
+                    <div class="phase-header" onclick="togglePhase(${phase.phaseId})">
+                        <div class="phase-info">
+                            <div class="phase-number">
+                                ${phaseCompleted ? '<i class="fa-solid fa-check"></i>' : phase.phaseId}
+                            </div>
+                            <div class="phase-title-group">
+                                <h3>Phase ${phase.phaseId} — ${phase.title}</h3>
+                                <p>${phase.description}</p>
+                            </div>
+                        </div>
+                        <div class="phase-meta">
+                            <span class="phase-badge phase-duration"><i class="fa-regular fa-clock"></i> ${phase.duration}</span>
+                            <span class="phase-badge" id="phase-progress-lbl-${phase.phaseId}">${completedCount} / ${phase.tasks.length} Completed</span>
+                            <i class="fa-solid fa-chevron-down phase-chevron"></i>
+                        </div>
+                    </div>
+                    <div class="phase-body">
+                        <ul class="task-list" id="task-list-${phase.phaseId}">
+                            <!-- Tasks elements -->
+                        </ul>
+                        <!-- Custom Task Addition form -->
+                        <div class="add-task-box">
+                            <input type="text" class="task-input" id="task-input-lbl-${phase.phaseId}" placeholder="Request custom task to Phase ${phase.phaseId}...">
+                            <input type="text" class="task-hours-input" id="task-input-hrs-${phase.phaseId}" placeholder="e.g. 4 hrs">
+                            <button class="btn btn-primary" onclick="addCustomTask(${phase.phaseId})"><i class="fa-solid fa-plus"></i> Add</button>
+                        </div>
+                    </div>
+                `;
+
+                container.appendChild(phaseCard);
+                renderTasksForPhase(phase.phaseId);
+            });
+        }
+
+        // Render list tasks inside target phase scope
+        function renderTasksForPhase(phaseId) {
+            const phase = roadmapData.find(p => p.phaseId === phaseId);
+            const listContainer = document.getElementById(`task-list-${phaseId}`);
+            listContainer.innerHTML = "";
+
+            phase.tasks.forEach(task => {
+                const li = document.createElement('li');
+                li.className = `task-item ${task.checked ? 'checked' : ''}`;
+                li.id = `task-item-${task.id}`;
+                li.innerHTML = `
+                    <div class="task-checkbox-wrapper">
+                        <input type="checkbox" class="task-checkbox" id="check-${task.id}" ${task.checked ? 'checked' : ''} onchange="toggleTask('${task.id}', ${phaseId})">
+                    </div>
+                    <div class="task-content">
+                        <label class="task-label" for="check-${task.id}">${task.label}</label>
+                        <div class="task-description">${task.desc}</div>
+                        <div class="task-meta-pills">
+                            <span class="task-pill pill-time"><i class="fa-regular fa-clock"></i> ${task.time}</span>
+                            <span class="task-pill pill-priority"><i class="fa-solid fa-triangle-exclamation"></i> ${task.priority}</span>
+                        </div>
+                    </div>
+                    <div class="task-item-actions">
+                        <button class="task-delete-btn" onclick="deleteTask('${task.id}', ${phaseId})" title="Remove item"><i class="fa-solid fa-trash-can"></i></button>
+                    </div>
+                `;
+                listContainer.appendChild(li);
+            });
+        }
+
+        // Toggle phase card accordion collapse
+        function togglePhase(phaseId) {
+            const card = document.getElementById(`phase-card-${phaseId}`);
+            card.classList.toggle('collapsed');
+        }
+
+        // Toggle single task checked status
+        function toggleTask(taskId, phaseId) {
+            const phase = roadmapData.find(p => p.phaseId === phaseId);
+            const task = phase.tasks.find(t => t.id === taskId);
+            task.checked = !task.checked;
+
+            // Animate task card
+            const taskElement = document.getElementById(`task-item-${taskId}`);
+            if (task.checked) {
+                taskElement.classList.add('checked');
+            } else {
+                taskElement.classList.remove('checked');
+            }
+
+            saveTaskProgress();
+            
+            // Check if phase state completed changed to update headers
+            const phaseCompleted = phase.tasks.every(t => t.checked);
+            const card = document.getElementById(`phase-card-${phaseId}`);
+            if (phaseCompleted) {
+                card.classList.add('completed-phase');
+                card.querySelector('.phase-number').innerHTML = '<i class="fa-solid fa-check"></i>';
+            } else {
+                card.classList.remove('completed-phase');
+                card.querySelector('.phase-number').innerHTML = phaseId;
+            }
+
+            // Update badge text
+            const completedCount = phase.tasks.filter(t => t.checked).length;
+            document.getElementById(`phase-progress-lbl-${phaseId}`).textContent = `${completedCount} / ${phase.tasks.length} Completed`;
+        }
+
+        // Create customizable custom task
+        function addCustomTask(phaseId) {
+            const labelInput = document.getElementById(`task-input-lbl-${phaseId}`);
+            const hoursInput = document.getElementById(`task-input-hrs-${phaseId}`);
+
+            const labelVal = labelInput.value.trim();
+            const hoursVal = hoursInput.value.trim() || "2 hrs";
+
+            if (!labelVal) {
+                showToast("Please enter a valid task name!", "warning");
+                return;
+            }
+
+            const newId = `custom-${Date.now()}`;
+            const phase = roadmapData.find(p => p.phaseId === phaseId);
+            
+            phase.tasks.push({
+                id: newId,
+                label: labelVal,
+                desc: "Custom requested development checklist item.",
+                time: hoursVal,
+                priority: "custom",
+                checked: false
+            });
+
+            labelInput.value = "";
+            hoursInput.value = "";
+
+            renderTasksForPhase(phaseId);
+            saveTaskProgress();
+            showToast("Successfully added custom task!");
+
+            // Update badge counter
+            const completedCount = phase.tasks.filter(t => t.checked).length;
+            document.getElementById(`phase-progress-lbl-${phaseId}`).textContent = `${completedCount} / ${phase.tasks.length} Completed`;
+        }
+
+        // Delete checklist task
+        function deleteTask(taskId, phaseId) {
+            const phase = roadmapData.find(p => p.phaseId === phaseId);
+            phase.tasks = phase.tasks.filter(t => t.id !== taskId);
+
+            renderTasksForPhase(phaseId);
+            saveTaskProgress();
+            showToast("Task deleted.");
+
+            // Update badge counter
+            const completedCount = phase.tasks.filter(t => t.checked).length;
+            document.getElementById(`phase-progress-lbl-${phaseId}`).textContent = `${completedCount} / ${phase.tasks.length} Completed`;
+        }
+
+        // DB Sidebar generator
+        function renderDatabaseSidebar() {
+            const sidebar = document.getElementById('db-sidebar-menu');
+            sidebar.innerHTML = "";
+
+            databaseTables.forEach((table, index) => {
+                const btn = document.createElement('button');
+                btn.className = `db-tab-btn ${index === currentActiveTableIndex ? 'active' : ''}`;
+                btn.onclick = () => selectDatabaseTable(index);
+                btn.innerHTML = `
+                    <span><i class="fa-solid fa-table" style="color:var(--text-muted); margin-right:8px;"></i> ${table.name}</span>
+                    <span class="badge-pk">PK</span>
+                `;
+                sidebar.appendChild(btn);
+            });
+        }
+
+        // DB selection renderer
+        function selectDatabaseTable(index) {
+            currentActiveTableIndex = index;
+            renderDatabaseSidebar();
+            renderDatabaseContent();
+        }
+
+        // DB detail visualizer
+        function renderDatabaseContent() {
+            const pane = document.getElementById('db-content-pane');
+            const table = databaseTables[currentActiveTableIndex];
+
+            let colsHtml = "";
+            table.columns.forEach(col => {
+                const isPk = col.type.includes("(PK)");
+                colsHtml += `
+                    <div class="col-desc-card">
+                        <div class="col-name-type">
+                            <span class="col-name">${col.name}</span>
+                            <span class="col-type ${isPk ? 'pk-type' : ''}">${col.type}</span>
+                        </div>
+                        <span class="col-desc">${col.desc}</span>
+                    </div>
+                `;
+            });
+
+            pane.innerHTML = `
+                <div class="table-meta-header">
+                    <div>
+                        <h2 class="table-title">${table.name}</h2>
+                        <p class="table-subtitle">${table.subtitle}</p>
+                    </div>
+                    <span class="phase-badge alert-success"><i class="fa-solid fa-circle-check"></i> Isolated Tenant Isolation Active</span>
+                </div>
+
+                <div class="sql-wrapper">
+                    <div class="sql-header">
+                        <span class="sql-lang">PostgreSQL Script</span>
+                        <button class="sql-copy-btn" onclick="copySnippet('sql-block-payload')"><i class="fa-solid fa-copy"></i> Copy Script</button>
+                    </div>
+                    <div class="sql-code" id="sql-block-payload">${table.sql}</div>
+                </div>
+
+                <div class="table-cols-list">
+                    <h3 class="table-cols-title"><i class="fa-solid fa-circle-info"></i> Column Descriptions</h3>
+                    <div class="table-cols-grid">
+                        ${colsHtml}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Generic Copy to Clipboard Helper
+        function copySnippet(elementId) {
+            const textToCopy = document.getElementById(elementId).textContent;
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                showToast("Copied script to clipboard!");
+            }).catch(err => {
+                showToast("Failed to copy code.", "danger");
+            });
+        }
+
+        // Show Toast Notification alert
+        function showToast(message, type = "success") {
+            const toast = document.getElementById('ui-toast');
+            const icon = toast.querySelector('i');
+            
+            toast.className = "toast"; // Reset
+            
+            if (type === "warning") {
+                toast.style.borderColor = "var(--warning)";
+                icon.className = "fa-solid fa-triangle-exclamation";
+                icon.style.color = "var(--warning)";
+            } else if (type === "danger") {
+                toast.style.borderColor = "var(--danger)";
+                icon.className = "fa-solid fa-circle-xmark";
+                icon.style.color = "var(--danger)";
+            } else {
+                toast.style.borderColor = "var(--success)";
+                icon.className = "fa-solid fa-circle-check";
+                icon.style.color = "var(--success)";
+            }
+            
+            document.getElementById('toast-message').textContent = message;
+            toast.classList.add('show');
+
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // Premium Celebration Confetti Canvas Emitter
+        const canvas = document.getElementById('confetti-canvas');
+        const ctx = canvas.getContext('2d');
+        let confetti = [];
+        let animationFrameId = null;
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        class ConfettiParticle {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * -canvas.height - 20;
+                this.size = Math.random() * 8 + 4;
+                this.color = ['#6366f1', '#14b8a6', '#a855f7', '#f59e0b', '#ec4899', '#10b981'][Math.floor(Math.random() * 6)];
+                this.speedX = Math.random() * 4 - 2;
+                this.speedY = Math.random() * 5 + 3;
+                this.rotation = Math.random() * 360;
+                this.rotationSpeed = Math.random() * 4 - 2;
+            }
+
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.rotation += this.rotationSpeed;
+                
+                // Wind sway
+                this.speedX += Math.sin(this.y / 30) * 0.05;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.rotation * Math.PI / 180);
+                ctx.fillStyle = this.color;
+                ctx.fillRect(-this.size/2, -this.size/2, this.size, this.size);
+                ctx.restore();
+            }
+        }
+
+        function triggerConfetti() {
+            // Cancel any running animations first
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            
+            confetti = [];
+            for (let i = 0; i < 150; i++) {
+                confetti.push(new ConfettiParticle());
+            }
+
+            animateConfetti();
+        }
+
+        function animateConfetti() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            let active = false;
+            confetti.forEach(p => {
+                p.update();
+                p.draw();
+                if (p.y < canvas.height) active = true;
+            });
+
+            if (active) {
+                animationFrameId = requestAnimationFrame(animateConfetti);
+            } else {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+        }
+    </script>
+</body>
+</html>

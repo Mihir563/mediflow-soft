@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
 import { getDB } from '@/lib/db';
-import { FileText, Search, Package2 } from 'lucide-react';
+import { FileText, Search, Package2, Edit3 } from 'lucide-react';
 
-export default function PurchaseHistory() {
+interface PurchaseHistoryProps {
+  onEditPurchase?: (txnId: number) => void;
+}
+
+export default function PurchaseHistory({ onEditPurchase }: PurchaseHistoryProps) {
   const [purchases, setPurchases] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -52,6 +56,12 @@ export default function PurchaseHistory() {
       String(p.date).toLowerCase().includes(q);
   });
 
+  const statusColor = (status: string) => {
+    if (status === 'paid') return 'bg-green-100 text-green-700';
+    if (status === 'partial') return 'bg-amber-100 text-amber-700';
+    return 'bg-red-100 text-red-600';
+  };
+
   return (
     <div className="flex h-full bg-slate-50 gap-4 p-4">
       {/* List */}
@@ -91,7 +101,12 @@ export default function PurchaseHistory() {
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-bold text-slate-700 font-mono text-sm">{row.invoice_no || 'N/A'}</span>
-                    <span className="font-bold text-slate-800">₹{row.total_amount?.toFixed(2)}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide ${statusColor(row.status)}`}>
+                        {row.status}
+                      </span>
+                      <span className="font-bold text-slate-800">₹{row.total_amount?.toFixed(2)}</span>
+                    </div>
                   </div>
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-500 truncate">{row.party_name || 'Cash Purchase'}</span>
@@ -113,10 +128,20 @@ export default function PurchaseHistory() {
               <h3 className="text-xl font-bold text-slate-800 font-mono">{selectedTxn.invoice_no}</h3>
               <p className="text-sm text-slate-600 font-medium mt-1">{selectedTxn.party_name || 'Cash Purchase'}</p>
             </div>
-            <div className="text-right">
+            <div className="flex items-center gap-2">
               <span className="inline-flex items-center px-2 py-1 rounded bg-slate-100 text-slate-600 text-xs font-bold font-mono">
-                {new Date(selectedTxn.date).toLocaleString('en-GB')}
+                {new Date(selectedTxn.date).toLocaleDateString('en-GB')}
               </span>
+              {onEditPurchase && (
+                <button
+                  onClick={() => onEditPurchase(selectedTxn.id)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white text-xs font-bold hover:bg-brand-hover transition-colors shadow-sm"
+                  title="Edit this purchase bill"
+                >
+                  <Edit3 size={12} />
+                  Edit Bill
+                </button>
+              )}
             </div>
           </div>
           
@@ -138,6 +163,9 @@ export default function PurchaseHistory() {
                         <span>Qty: {item.quantity}</span>
                         <span>Price: ₹{item.price?.toFixed(2)}</span>
                         {item.batch_no && <span className="text-slate-400">• Batch: {item.batch_no}</span>}
+                        {item.expiry_date && <span className="text-slate-400">• Exp: {item.expiry_date}</span>}
+                        {item.discount_pct > 0 && <span className="text-orange-500">• Disc: {item.discount_pct}%</span>}
+                        {item.tax_pct > 0 && <span className="text-blue-500">• GST: {item.tax_pct}%</span>}
                       </div>
                     </div>
                     <div className="text-right font-bold text-slate-800 font-mono">
@@ -154,7 +182,7 @@ export default function PurchaseHistory() {
                 <span className="font-bold font-mono">₹{selectedTxn.total_amount?.toFixed(2)}</span>
               </div>
               <div className="flex items-center justify-between text-sm text-slate-600">
-                <span>Paid Initially</span>
+                <span>Paid</span>
                 <span className="font-mono text-green-600">₹{selectedTxn.paid_amount?.toFixed(2)}</span>
               </div>
               {selectedTxn.balance_due > 0 && (
@@ -163,7 +191,27 @@ export default function PurchaseHistory() {
                   <span className="font-mono">₹{selectedTxn.balance_due?.toFixed(2)}</span>
                 </div>
               )}
+              <div className="flex items-center justify-between text-sm text-slate-500 pt-2">
+                <span>Payment Type</span>
+                <span className="capitalize font-medium text-slate-700">{selectedTxn.payment_type}</span>
+              </div>
+              {selectedTxn.challan_no && (
+                <div className="flex items-center justify-between text-sm text-slate-500">
+                  <span>Challan No</span>
+                  <span className="font-mono text-slate-700">{selectedTxn.challan_no}</span>
+                </div>
+              )}
             </div>
+
+            {onEditPurchase && (
+              <button
+                onClick={() => onEditPurchase(selectedTxn.id)}
+                className="mt-6 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-brand text-white font-bold text-sm hover:bg-brand-hover transition-colors shadow-md"
+              >
+                <Edit3 size={15} />
+                Edit This Purchase Bill
+              </button>
+            )}
           </div>
         </div>
       )}

@@ -1,0 +1,8 @@
+Opening: D:\Billing Software\mediflow\src-tauri\mediflow.db
+Tables found: 6
+items: 1584 rows | cols: id, name, hsn, unit, sale_price, purchase_price, opening_stock, current_stock, category, tax_rate, discount, min_stock, inclusive_tax
+sqlite_sequence: 5 rows | cols: name, seq
+parties: 45 rows | cols: id, name, phone, gstin, address, type, opening_balance
+transactions: 1894 rows | cols: id, invoice_no, date, party_id, total_amount, type, payment_type, status, paid_amount, balance_due, challan_no, description
+transaction_items: 8614 rows | cols: id, txn_id, item_id, quantity, price, batch_no, expiry_date, item_name, unit, discount_pct, discount_amt, tax_pct, tax_amt, amount
+party_special_rates: 1 rows | cols: id, party_id, item_id, price, discount

@@ -29,6 +29,8 @@ export default function Settings() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [geminiKeyStatus, setGeminiKeyStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   // Cloud backup state
   const [mongoConfig, setMongoConfig] = useState<MongoConfig>({
@@ -57,12 +59,29 @@ export default function Settings() {
         if (Object.keys(defaultSettings).includes(r.key)) {
           loaded[r.key as keyof AppSettings] = r.value === 'true';
         }
+        if (r.key === 'gemini_api_key') setGeminiApiKey(r.value);
       });
       setSettings(loaded);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveGeminiKey = async () => {
+    setGeminiKeyStatus('saving');
+    try {
+      const db = await getDB();
+      await db.execute(
+        `INSERT INTO app_settings (key, value) VALUES ('gemini_api_key', $1) ON CONFLICT(key) DO UPDATE SET value = $1`,
+        [geminiApiKey.trim()]
+      );
+      setGeminiKeyStatus('saved');
+      setTimeout(() => setGeminiKeyStatus('idle'), 3000);
+    } catch (e) {
+      console.error(e);
+      setGeminiKeyStatus('error');
     }
   };
 
@@ -248,6 +267,56 @@ export default function Settings() {
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            </div>
+
+            {/* Gemini AI / OCR */}
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+              <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-purple-50 to-blue-50 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center">
+                  <Key size={16} className="text-white" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-slate-800 text-sm">Gemini AI — Bill Scanner OCR</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">Enable AI-powered bill scanning with Google Gemini</p>
+                </div>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 text-xs text-blue-700 flex gap-2">
+                  <Info size={14} className="flex-shrink-0 mt-0.5 text-blue-500" />
+                  <span>Get a free key at <strong>aistudio.google.com/app/apikey</strong>. Images are sent <strong>inline as base64</strong> — no cloud storage required. Your key stays local on this device only.</span>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 font-semibold block mb-1.5 uppercase tracking-wider">Gemini API Key</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      value={geminiApiKey}
+                      onChange={e => { setGeminiApiKey(e.target.value); setGeminiKeyStatus('idle'); }}
+                      placeholder="AIza..."
+                      className="flex-1 h-10 border border-slate-200 rounded-lg px-3 text-sm font-mono focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 shadow-sm"
+                    />
+                    <button
+                      onClick={saveGeminiKey}
+                      disabled={!geminiApiKey.trim() || geminiKeyStatus === 'saving'}
+                      className={`px-4 h-10 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${
+                        geminiKeyStatus === 'saved' ? 'bg-emerald-500 text-white' :
+                        geminiKeyStatus === 'error' ? 'bg-red-500 text-white' :
+                        'bg-brand hover:bg-brand-hover text-white disabled:opacity-50'
+                      }`}
+                    >
+                      {geminiKeyStatus === 'saving' ? <><Loader2 size={13} className="animate-spin" /> Saving...</> :
+                       geminiKeyStatus === 'saved' ? <><CheckCircle2 size={13} /> Saved!</> :
+                       geminiKeyStatus === 'error' ? 'Error' :
+                       <><Save size={13} /> Save Key</>}
+                    </button>
+                  </div>
+                  {geminiApiKey && (
+                    <p className="text-xs text-emerald-600 mt-1.5 flex items-center gap-1">
+                      <CheckCircle size={11} /> Key configured — Gemini OCR active in the bill scanner
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

@@ -1,12 +1,14 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getDB } from '@/lib/db';
-import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle } from 'lucide-react';
+import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle, Edit3 } from 'lucide-react';
 import ItemModal from '@/components/ItemModal';
-import ScannerPanel from '@/components/ScannerPanel';
+import ScannerPanel, { GeminiBillData } from '@/components/ScannerPanel';
 import QtyCalculatorModal from '@/components/QtyCalculatorModal';
 import BatchModal from '@/components/BatchModal';
 import { AppSettings, defaultSettings } from '@/pages/Settings';
+import SmartDateInput from '@/components/SmartDateInput';
+import SmartExpiryInput from '@/components/SmartExpiryInput';
 
 interface VendorOption {
   id: number;
@@ -31,18 +33,19 @@ interface PurchaseRow {
   name: string;
   unit: string;
   base_unit: string;
-  tabsPerStrip: number | '';
-  stripsPerBox: number | '';
-  purchase_price: number | '';
-  sale_price: number | '';
-  qty: number | '';
-  free: number | '';
+  tabsPerStrip: string | number | '';
+  stripsPerBox: string | number | '';
+  purchase_price: string | number | '';
+  sale_price: string | number | '';
+  qty: string | number | '';
+  free: string | number | '';
   batch: string;
   expiry: string;
-  mrp: number | '';
-  price: number | '';
-  disc: number | '';
-  gst: number | '';
+  mrp: string | number | '';
+  price: string | number | '';
+  disc: string | number | '';
+  gst: string | number | '';
+  scheme_amount: string | number | '';
 }
 
 const DEFAULT_ROW_COUNT = 5;
@@ -66,6 +69,7 @@ const createEmptyRow = (rowId: number): PurchaseRow => ({
   price: 0,
   disc: 0,
   gst: 0,
+  scheme_amount: '',
 });
 
 const formatExpiryInput = (value: string) => {
@@ -78,7 +82,7 @@ const formatExpiryInput = (value: string) => {
   return `${day}-${month}-${year}`;
 };
 
-export default function PurchaseBill() {
+export default function PurchaseBill({ editTxnId, onSaved }: { editTxnId?: number | null; onSaved?: () => void } = {}) {
   const [vendor, setVendor] = useState<VendorOption | null>(null);
   const [vendorSearch, setVendorSearch] = useState('');
   const [vendorResults, setVendorResults] = useState<VendorOption[]>([]);
@@ -88,7 +92,7 @@ export default function PurchaseBill() {
   const [billNo, setBillNo] = useState(createPurchaseBillNo);
   const [billDate, setBillDate] = useState(new Date().toISOString().split('T')[0]);
   const [dueDate, setDueDate] = useState('');
-  const [paymentType, setPaymentType] = useState<'cash' | 'credit' | 'upi'>('cash');
+  const [paymentType, setPaymentType] = useState<'cash' | 'credit' | 'upi'>('credit');
   const [challanNo, setChallanNo] = useState('');
   const [description, setDescription] = useState('');
   const [paidAmount, setPaidAmount] = useState<number | ''>('');
@@ -109,6 +113,8 @@ export default function PurchaseBill() {
 
   const rowSeedRef = useRef(DEFAULT_ROW_COUNT + 1);
   const itemInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editTxnDbId, setEditTxnDbId] = useState<number | null>(null);
 
   const validRows = useMemo(() => cart.filter(row => (row.itemId || row.name.trim()) && (Number(row.qty) || 0) > 0 && (Number(row.price) || 0) > 0), [cart]);
   
@@ -119,14 +125,19 @@ export default function PurchaseBill() {
       const priceVal = Number(row.price) || 0;
       const discVal = Number(row.disc) || 0;
       const taxVal = Number(row.gst) || 0;
+      const schemeVal = Number(row.scheme_amount) || 0;
       
       const base = priceVal * qtyVal;
       const discAmt = base * (discVal / 100);
-      const taxAmt = (base - discAmt) * (taxVal / 100);
+      const taxable = Math.max(0, base - discAmt - schemeVal);
+      const taxAmt = taxable * (taxVal / 100);
       
-      sub += base; disc += discAmt; tax += taxAmt; total += (base - discAmt + taxAmt);
+      sub += base;
+      disc += (discAmt + schemeVal);
+      tax += taxAmt;
+      total += (taxable + taxAmt);
     });
-    return { subtotal: sub, totalDiscount: disc, totalTax: tax, net: Math.round(total * 100) / 100, afterDiscount: sub - disc };
+    return { subtotal: sub, totalDiscount: disc, totalTax: tax, net: Math.round(total), afterDiscount: sub - disc };
   }, [validRows]);
 
   const focusRowInput = (rowId?: number | null) => {
@@ -135,6 +146,75 @@ export default function PurchaseBill() {
     setActiveRowId(targetId);
     setTimeout(() => itemInputRefs.current[targetId]?.focus(), 10);
   };
+
+  // Load existing transaction for editing
+  useEffect(() => {
+    if (!editTxnId) return;
+    const loadExistingTransaction = async () => {
+      try {
+        const db = await getDB();
+        const [txn] = await db.select<any[]>(
+          `SELECT t.*, p.name as party_name FROM transactions t LEFT JOIN parties p ON t.party_id = p.id WHERE t.id = $1`,
+          [editTxnId]
+        );
+        if (!txn) return;
+
+        // Restore header fields
+        setIsEditMode(true);
+        setEditTxnDbId(txn.id);
+        setBillNo(txn.invoice_no || '');
+        setBillDate(txn.date ? txn.date.split('T')[0] : new Date().toISOString().split('T')[0]);
+        setPaymentType(txn.payment_type || 'cash');
+        setChallanNo(txn.challan_no || '');
+        setDescription(txn.description || '');
+        setPaidAmount(txn.paid_amount || '');
+        if (txn.party_id && txn.party_name) {
+          setVendor({ id: txn.party_id, name: txn.party_name });
+          setVendorSearch(txn.party_name);
+        }
+
+        // Load line items
+        const items = await db.select<any[]>(
+          `SELECT ti.*, i.unit, i.tabs_per_strip, i.strips_per_box FROM transaction_items ti LEFT JOIN items i ON ti.item_id = i.id WHERE ti.txn_id = $1`,
+          [editTxnId]
+        );
+
+        let seed = 1;
+        const loadedRows: PurchaseRow[] = items.map(item => ({
+          rowId: seed++,
+          itemId: item.item_id,
+          name: item.item_name || '',
+          unit: item.unit || 'TAB',
+          base_unit: item.unit || 'TAB',
+          tabsPerStrip: item.tabs_per_strip || 10,
+          stripsPerBox: item.strips_per_box || 10,
+          purchase_price: item.price || 0,
+          sale_price: item.price || 0,
+          qty: item.quantity || 1,
+          free: 0 as number | '',
+          batch: item.batch_no || '',
+          expiry: item.expiry_date || '',
+          mrp: item.price || 0,
+          price: item.price || 0,
+          disc: item.discount_pct || 0,
+          gst: item.tax_pct || 0,
+          scheme_amount: item.scheme_amount || '',
+        }));
+
+        rowSeedRef.current = seed + 1;
+        // Add empty rows at end
+        while (loadedRows.length < DEFAULT_ROW_COUNT) {
+          loadedRows.push(createEmptyRow(seed++));
+          rowSeedRef.current = seed + 1;
+        }
+        setCart(loadedRows);
+        setStatus('✏️ Editing existing purchase bill. Make changes and save.');
+      } catch (e) {
+        console.error('Failed to load purchase for editing:', e);
+      }
+    };
+    loadExistingTransaction();
+  }, [editTxnId]);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -273,48 +353,155 @@ export default function PurchaseBill() {
       return;
     }
 
+    // Validate bill number
+    if (!billNo.trim()) {
+      setStatus('❌ Bill number cannot be empty');
+      return;
+    }
+
+    // Validate expiry dates on all rows
+    for (const row of validRows) {
+      if (row.expiry && row.expiry.trim() !== '') {
+        const parts = row.expiry.split('/');
+        const m = parts.length > 0 ? parseInt(parts[0], 10) : 0;
+        const yStr = parts.length > 1 ? parts[1] : '';
+        const y = parseInt(yStr, 10);
+        if (parts.length !== 2 || isNaN(m) || m < 1 || m > 12 || isNaN(y) || (yStr.length !== 2 && yStr.length !== 4)) {
+          setStatus(`❌ Invalid expiry date "${row.expiry}" for item "${row.name}". Use MM/YY or MM/YYYY`);
+          return;
+        }
+      }
+    }
+
     const finalPaid = paidAmount === '' ? net : Number(paidAmount);
     const balanceDue = net - finalPaid;
     const paymentStatus = balanceDue <= 0 ? 'paid' : finalPaid > 0 ? 'partial' : 'unpaid';
 
     try {
       const db = await getDB();
-      const res = await db.execute(
-        `INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description) VALUES ($1,$2,$3,$4,$5,$6,'purchase',$7,$8,$9,$10)`,
-        [billNo, billDate, vendor?.id || null, net, finalPaid, balanceDue, paymentType, paymentStatus, challanNo, description]
+
+      // Check for duplicate bill number (skip check if editing same bill)
+      const existing = await db.select<any[]>(
+        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'purchase'${isEditMode && editTxnDbId ? ` AND id != ${editTxnDbId}` : ''}`,
+        [billNo.trim()]
       );
-      const txnId = Number((res as { lastInsertId?: number }).lastInsertId);
-      for (const row of validRows) {
-        const qtyVal = Number(row.qty) || 0;
-        const stripsPerBoxVal = Number(row.stripsPerBox) || 1;
-        const tabsPerStripVal = Number(row.tabsPerStrip) || 1;
-        const priceVal = Number(row.price) || 0;
-        const mrpVal = Number(row.mrp) || 0;
-        const discVal = Number(row.disc) || 0;
-        const gstVal = Number(row.gst) || 0;
-
-        let inventoryQty = qtyVal;
-        let scaleDown = 1;
-        if (row.unit === 'BOX') {
-           scaleDown = stripsPerBoxVal * tabsPerStripVal;
-        } else if (row.unit === 'STRIP') {
-           scaleDown = tabsPerStripVal;
-        }
-        inventoryQty = qtyVal * scaleDown;
-
-        const basePurchasePrice = priceVal / scaleDown;
-        const baseSalePrice = mrpVal / scaleDown;
-
-        await db.execute(
-          `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, price, discount_pct, tax_pct, amount, batch_no, expiry_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [txnId, row.itemId, row.name, qtyVal, priceVal, discVal, gstVal, priceVal * qtyVal, row.batch, row.expiry]
-        );
-        await db.execute(
-          `UPDATE items SET current_stock = current_stock + $1, purchase_price = $2, sale_price = $3, tabs_per_strip = $4, strips_per_box = $5, unit = 'TAB' WHERE id = $6`,
-          [inventoryQty, basePurchasePrice, baseSalePrice, tabsPerStripVal, stripsPerBoxVal, row.itemId]
-        );
+      if (existing.length > 0) {
+        setStatus(`❌ A purchase bill with number "${billNo.trim()}" already exists! Use a different bill number.`);
+        return;
       }
-      setStatus(`✅ Purchase ${billNo} saved!`);
+
+      if (isEditMode && editTxnDbId) {
+        // === EDIT MODE: Update existing transaction ===
+        // First, reverse the stock changes from the old items
+        const oldItems = await db.select<any[]>(
+          `SELECT * FROM transaction_items WHERE txn_id = $1`,
+          [editTxnDbId]
+        );
+        for (const oldItem of oldItems) {
+          if (oldItem.item_id) {
+            await db.execute(
+              `UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`,
+              [oldItem.quantity, oldItem.item_id]
+            );
+          }
+        }
+
+        // Delete old items
+        await db.execute(`DELETE FROM transaction_items WHERE txn_id = $1`, [editTxnDbId]);
+
+        // Update transaction header
+        await db.execute(
+          `UPDATE transactions SET invoice_no=$1, date=$2, party_id=$3, total_amount=$4, paid_amount=$5, balance_due=$6, payment_type=$7, status=$8, challan_no=$9, description=$10 WHERE id=$11`,
+          [billNo, billDate, vendor?.id || null, net, finalPaid, balanceDue, paymentType, paymentStatus, challanNo, description, editTxnDbId]
+        );
+
+        // Re-insert updated items
+        for (const row of validRows) {
+          const qtyVal = Number(row.qty) || 0;
+          const stripsPerBoxVal = Number(row.stripsPerBox) || 1;
+          const tabsPerStripVal = Number(row.tabsPerStrip) || 1;
+          const priceVal = Number(row.price) || 0;
+          const mrpVal = Number(row.mrp) || 0;
+          const discVal = Number(row.disc) || 0;
+          const gstVal = Number(row.gst) || 0;
+          const schemeVal = Number(row.scheme_amount) || 0;
+
+          let inventoryQty = qtyVal;
+          let scaleDown = 1;
+          if (row.unit === 'BOX') scaleDown = stripsPerBoxVal * tabsPerStripVal;
+          else if (row.unit === 'STRIP') scaleDown = tabsPerStripVal;
+          inventoryQty = qtyVal * scaleDown;
+
+          const basePurchasePrice = priceVal / scaleDown;
+          const baseSalePrice = mrpVal / scaleDown;
+
+          const base = priceVal * qtyVal;
+          const discAmt = base * (discVal / 100);
+          const taxable = Math.max(0, base - discAmt - schemeVal);
+          const taxAmt = taxable * (gstVal / 100);
+          const rowAmount = taxable + taxAmt;
+
+          await db.execute(
+            `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, price, discount_pct, tax_pct, amount, batch_no, expiry_date, scheme_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [editTxnDbId, row.itemId, row.name, qtyVal, priceVal, discVal, gstVal, rowAmount, row.batch, row.expiry, schemeVal]
+          );
+          if (row.itemId) {
+            await db.execute(
+              `UPDATE items SET current_stock = current_stock + $1, purchase_price = $2, sale_price = $3, tabs_per_strip = $4, strips_per_box = $5, unit = 'TAB' WHERE id = $6`,
+              [inventoryQty, basePurchasePrice, baseSalePrice, tabsPerStripVal, stripsPerBoxVal, row.itemId]
+            );
+          }
+        }
+
+        setStatus(`✅ Purchase ${billNo} updated successfully!`);
+        setIsEditMode(false);
+        setEditTxnDbId(null);
+        if (onSaved) onSaved();
+
+      } else {
+        // === NEW MODE: Insert new transaction ===
+        const res = await db.execute(
+          `INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description) VALUES ($1,$2,$3,$4,$5,$6,'purchase',$7,$8,$9,$10)`,
+          [billNo, billDate, vendor?.id || null, net, finalPaid, balanceDue, paymentType, paymentStatus, challanNo, description]
+        );
+        const txnId = Number((res as { lastInsertId?: number }).lastInsertId);
+        for (const row of validRows) {
+          const qtyVal = Number(row.qty) || 0;
+          const stripsPerBoxVal = Number(row.stripsPerBox) || 1;
+          const tabsPerStripVal = Number(row.tabsPerStrip) || 1;
+          const priceVal = Number(row.price) || 0;
+          const mrpVal = Number(row.mrp) || 0;
+          const discVal = Number(row.disc) || 0;
+          const gstVal = Number(row.gst) || 0;
+          const schemeVal = Number(row.scheme_amount) || 0;
+
+          let inventoryQty = qtyVal;
+          let scaleDown = 1;
+          if (row.unit === 'BOX') scaleDown = stripsPerBoxVal * tabsPerStripVal;
+          else if (row.unit === 'STRIP') scaleDown = tabsPerStripVal;
+          inventoryQty = qtyVal * scaleDown;
+
+          const basePurchasePrice = priceVal / scaleDown;
+          const baseSalePrice = mrpVal / scaleDown;
+
+          const base = priceVal * qtyVal;
+          const discAmt = base * (discVal / 100);
+          const taxable = Math.max(0, base - discAmt - schemeVal);
+          const taxAmt = taxable * (gstVal / 100);
+          const rowAmount = taxable + taxAmt;
+
+          await db.execute(
+            `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, price, discount_pct, tax_pct, amount, batch_no, expiry_date, scheme_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [txnId, row.itemId, row.name, qtyVal, priceVal, discVal, gstVal, rowAmount, row.batch, row.expiry, schemeVal]
+          );
+          await db.execute(
+            `UPDATE items SET current_stock = current_stock + $1, purchase_price = $2, sale_price = $3, tabs_per_strip = $4, strips_per_box = $5, unit = 'TAB' WHERE id = $6`,
+            [inventoryQty, basePurchasePrice, baseSalePrice, tabsPerStripVal, stripsPerBoxVal, row.itemId]
+          );
+        }
+        setStatus(`✅ Purchase ${billNo} saved!`);
+      }
+
       setCart(Array.from({ length: DEFAULT_ROW_COUNT }, (_, index) => createEmptyRow(index + 1)));
       rowSeedRef.current = DEFAULT_ROW_COUNT + 1;
       setVendor(null);
@@ -384,7 +571,15 @@ export default function PurchaseBill() {
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden text-sm">
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-        <h2 className="text-xl font-bold text-slate-800">Purchase</h2>
+        <div className="flex items-center gap-3">
+          {isEditMode && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 text-xs font-bold">
+              <Edit3 size={12} />
+              Editing Bill
+            </span>
+          )}
+          <h2 className="text-xl font-bold text-slate-800">{isEditMode ? `Edit: ${billNo}` : 'Purchase'}</h2>
+        </div>
         <div className="flex items-center gap-4">
           <button onClick={() => setShowScanner(true)} className="flex items-center gap-2 text-xs bg-brand/10 text-brand px-3 py-1.5 rounded-lg font-bold hover:bg-brand hover:text-white transition-colors">
             <ScanLine size={14} /> Mobile Scanner
@@ -481,23 +676,24 @@ export default function PurchaseBill() {
             </div>
             <div className="flex items-center gap-4 w-64">
               <label className="text-slate-500 w-24 text-right">Bill Date</label>
-              <input
-                id="billDate"
-                type="date"
-                value={billDate}
-                onChange={e => setBillDate(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'ArrowDown' || e.key === 'Enter') {
-                    e.preventDefault();
-                    const el = document.querySelector('[data-row="1"][data-field="name"]') as HTMLElement;
-                    if (el) el.focus();
-                  } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    document.getElementById('billNo')?.focus();
-                  }
-                }}
-                className="flex-1 h-8 border-b-2 border-slate-100 focus:border-brand hover:border-slate-200 rounded-none bg-transparent px-1 focus:outline-none text-slate-700"
-              />
+              <div className="flex-1">
+                <SmartDateInput
+                  id="billDate"
+                  value={billDate}
+                  onChange={setBillDate}
+                  onKeyDown={e => {
+                    if (e.key === 'ArrowDown' || e.key === 'Enter') {
+                      e.preventDefault();
+                      const el = document.querySelector('[data-row="1"][data-field="name"]') as HTMLElement;
+                      if (el) el.focus();
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      document.getElementById('billNo')?.focus();
+                    }
+                  }}
+                  className="!h-8 !border-0 !border-b-2 !border-slate-100 focus:!border-brand hover:!border-slate-200 !rounded-none !bg-transparent !px-1 !shadow-none !font-sans text-slate-700"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -526,15 +722,16 @@ export default function PurchaseBill() {
                 {settings.show_batch && <th className="px-1 py-2 text-left w-24"><HeaderTip label="Batch" tip={<><b>Batch Number</b><br/>બેચ નંબર.<br/><span className="text-slate-300">Must match the physical stock.</span></>} /></th>}
                 {settings.show_expiry && <th className="px-1 py-2 text-left w-24"><HeaderTip label="Exp." tip={<><b>Expiry Date</b><br/>એક્સપાયરી તારીખ.<br/><span className="text-slate-300">Format: DD-MM-YYYY</span></>} /></th>}
                 {settings.show_mrp && <th className="px-1 py-2 text-right w-16"><HeaderTip label="MRP" tip={<><b>Max Retail Price</b><br/>મહત્તમ છૂટક કિંમત.<br/><span className="text-slate-300">Printed price on the package.</span></>} /></th>}
-                <th className="px-1 py-2 text-right w-14"><HeaderTip label="Qty" tip={<><b>Quantity</b><br/>જથ્થો / નંગ.<br/><span className="text-slate-300">Units being purchased.</span></>} /></th>
-                <th className="px-1 py-2 text-right w-12"><HeaderTip label="Free" tip={<><b>Free Quantity</b><br/>મફત જથ્થો.<br/><span className="text-slate-300">Items received for free.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Price ₹" tip={<><b>Purchase Price</b><br/>ખરીદી કિંમત.<br/><span className="text-slate-300">Base price before tax/disc.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-14"><HeaderTip label="Qty" tip={<><b>Quantity</b><br/>જથ્ધો / નંગ.<br/><span className="text-slate-300">Units being purchased.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-12"><HeaderTip label="Free" tip={<><b>Free Quantity</b><br/>મફત જથ્ધો.<br/><span className="text-slate-300">Items received for free.</span></>} /></th>
                 <th className="px-1 py-2 text-left w-18"><HeaderTip label="Unit" tip={<><b>Unit Type</b><br/>એકમ.<br/><span className="text-slate-300">Buying unit (TAB/STRIP/BOX).</span></>} /></th>
-                <th className="px-1 py-2 text-right w-12"><HeaderTip label="T/S" tip={<><b>Tabs per Strip</b><br/>એક સ્ટ્રિપમાં કેટલી ટેબલેટ.<br/><span className="text-slate-300">Conversion rate.</span></>} /></th>
-                <th className="px-1 py-2 text-right w-12"><HeaderTip label="S/B" tip={<><b>Strips per Box</b><br/>એક બોક્સમાં કેટલી સ્ટ્રિપ.<br/><span className="text-slate-300">Conversion rate.</span></>} /></th>
+                <th className="px-1 py-2 text-center w-10"><HeaderTip label="T/S" tip={<><b>Tabs per Strip</b><br/>એક સ્ટ્રિપમાં કેટલી ટેબલેટ.<br/><span className="text-slate-300">Conversion rate.</span></>} /></th>
+                <th className="px-1 py-2 text-center w-10"><HeaderTip label="S/B" tip={<><b>Strips per Box</b><br/>એક બોક્સમાં કેટલી સ્ટ્રિપ.<br/><span className="text-slate-300">Conversion rate.</span></>} /></th>
                 {settings.show_tax && <th className="px-1 py-2 text-right w-14"><HeaderTip label="GST%" tip={<><b>GST Percentage</b><br/>જીએસટી ટકાવારી.<br/><span className="text-slate-300">Tax applied to this item.</span></>} /></th>}
                 <th className="px-1 py-2 text-right w-14"><HeaderTip label="Disc%" tip={<><b>Discount Percentage</b><br/>ડિસ્કાઉન્ટ ટકાવારી.<br/><span className="text-slate-300">Discount from supplier.</span></>} /></th>
-                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Price ₹" tip={<><b>Purchase Price</b><br/>ખરીદી કિંમત.<br/><span className="text-slate-300">Base price before tax/disc.</span></>} /></th>
-                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Amount" tip={<><b>Total Amount</b><br/>કુલ રકમ.<br/><span className="font-mono text-[10px] text-green-300 mt-1 block tracking-tight">Qty × Price - Disc + GST</span></>} /></th>
+                <th className="px-1 py-2 text-right w-16"><HeaderTip label="Scheme ₹" tip={<><b>Scheme Amount</b><br/>સ્કીમ રકમ.<br/><span className="text-slate-300">Flat scheme discount applied.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Amount" tip={<><b>Total Amount</b><br/>કુલ રકમ.<br/><span className="font-mono text-[10px] text-green-300 mt-1 block tracking-tight">Qty × Price - Disc - Scheme + GST</span></>} /></th>
                 <th className="pr-4 pl-1 py-2 w-8"></th>
               </tr>
             </thead>
@@ -545,11 +742,13 @@ export default function PurchaseBill() {
                 const priceVal = Number(row.price) || 0;
                 const discVal = Number(row.disc) || 0;
                 const taxVal = Number(row.gst) || 0;
+                const schemeVal = Number(row.scheme_amount) || 0;
                 
                 const rowBase = priceVal * qtyVal;
                 const rowDisc = rowBase * (discVal / 100);
-                const rowTax = (rowBase - rowDisc) * (taxVal / 100);
-                const rowAmount = rowBase - rowDisc + rowTax;
+                const rowTaxable = Math.max(0, rowBase - rowDisc - schemeVal);
+                const rowTax = rowTaxable * (taxVal / 100);
+                const rowAmount = rowTaxable + rowTax;
 
                 return (
                   <React.Fragment key={row.rowId}>
@@ -666,13 +865,14 @@ export default function PurchaseBill() {
                     )}
                     {settings.show_expiry && (
                       <td className="px-1 py-1 align-top">
-                        <input
+                        <SmartExpiryInput
                           value={row.expiry}
-                          onFocus={() => setActiveRowId(row.rowId)}
-                          onChange={e => updateRow(row.rowId, 'expiry', e.target.value)}
-                          onBlur={e => updateRow(row.rowId, 'expiry', formatExpiryInput(e.target.value))}
-                          placeholder="DD-MM-YYYY"
-                          className="w-full h-8 border border-slate-200 rounded-md px-2 text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                          onChange={val => updateRow(row.rowId, 'expiry', val)}
+                          onKeyDown={e => handleFieldArrow(e, row.rowId, 'expiry')}
+                          data-row={row.rowId}
+                          data-field="expiry"
+                          placeholder="MM/YY"
+                          className="!h-8"
                         />
                       </td>
                     )}
@@ -682,8 +882,7 @@ export default function PurchaseBill() {
                           type="text"
                           value={row.mrp}
                           onChange={e => {
-                            const val = e.target.value;
-                            updateRow(row.rowId, 'mrp', val === '' ? '' : Number(val));
+                            updateRow(row.rowId, 'mrp', e.target.value);
                           }}
                           className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                         />
@@ -692,11 +891,22 @@ export default function PurchaseBill() {
                     <td className="px-1 py-1 align-top">
                       <input
                         type="text"
+                        data-row={row.rowId} data-field="price"
+                        value={row.price}
+                        onChange={e => {
+                          updateRow(row.rowId, 'price', e.target.value);
+                        }}
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'price')}
+                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                      />
+                    </td>
+                    <td className="px-1 py-1 align-top">
+                      <input
+                        type="text"
                         data-row={row.rowId} data-field="qty"
                         value={row.qty}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'qty', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'qty', e.target.value);
                         }}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'qty')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
@@ -708,8 +918,7 @@ export default function PurchaseBill() {
                         data-row={row.rowId} data-field="free"
                         value={row.free}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'free', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'free', e.target.value);
                         }}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'free')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
@@ -733,8 +942,7 @@ export default function PurchaseBill() {
                         type="text"
                         value={row.tabsPerStrip}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'tabsPerStrip', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'tabsPerStrip', e.target.value);
                         }}
                         className="w-full h-8 border border-slate-200 rounded-md px-1 text-center font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
@@ -744,8 +952,7 @@ export default function PurchaseBill() {
                         type="text"
                         value={row.stripsPerBox}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'stripsPerBox', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'stripsPerBox', e.target.value);
                         }}
                         className="w-full h-8 border border-slate-200 rounded-md px-1 text-center font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
@@ -756,8 +963,7 @@ export default function PurchaseBill() {
                           type="text"
                           value={row.gst}
                           onChange={e => {
-                            const val = e.target.value;
-                            updateRow(row.rowId, 'gst', val === '' ? '' : Number(val));
+                            updateRow(row.rowId, 'gst', e.target.value);
                           }}
                           className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                         />
@@ -769,8 +975,7 @@ export default function PurchaseBill() {
                         data-row={row.rowId} data-field="disc"
                         value={row.disc}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'disc', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'disc', e.target.value);
                         }}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'disc')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
@@ -779,14 +984,14 @@ export default function PurchaseBill() {
                     <td className="px-1 py-1 align-top">
                       <input
                         type="text"
-                        data-row={row.rowId} data-field="price"
-                        value={row.price}
+                        data-row={row.rowId} data-field="scheme_amount"
+                        value={row.scheme_amount}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'price', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'scheme_amount', e.target.value);
                         }}
-                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'price')}
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'scheme_amount')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        placeholder="0"
                       />
                     </td>
                     <td className="px-1 py-1 align-top text-right font-medium font-mono text-slate-800">
@@ -805,28 +1010,37 @@ export default function PurchaseBill() {
               );
             })}
           </tbody>
-            <tfoot className="bg-slate-50 border-t border-b border-slate-200 sticky bottom-0 z-10">
-              <tr>
-                <td colSpan={2} className="px-4 py-2">
-                  <div className="flex items-center gap-4">
-                    <button
-                      onClick={addEmptyRow}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-brand"
-                    >
-                      <Plus size={14} /> Add Row
-                    </button>
-                    <span className="font-medium text-slate-600">Total</span>
-                  </div>
-                </td>
-                <td colSpan={(settings.show_batch ? 1 : 0) + (settings.show_expiry ? 1 : 0) + (settings.show_mrp ? 1 : 0)}></td>
-                <td className="px-1 py-2 text-right font-bold text-slate-700 font-mono text-xs">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
-                <td colSpan={4 + (settings.show_tax ? 1 : 0)}></td>
-                <td className="px-1 py-2 text-right font-bold text-slate-800 font-mono text-xs">{net.toFixed(2)}</td>
-                <td></td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+          <tfoot className="bg-slate-50 border-t border-b border-slate-200 sticky bottom-0 z-10">
+            <tr>
+              <td colSpan={2} className="px-4 py-2">
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={addEmptyRow}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-brand"
+                  >
+                    <Plus size={14} /> Add Row
+                  </button>
+                  <span className="font-medium text-slate-600">Total</span>
+                </div>
+              </td>
+              {settings.show_batch && <td></td>}
+              {settings.show_expiry && <td></td>}
+              {settings.show_mrp && <td></td>}
+              <td></td>
+              <td className="px-1 py-2 text-right font-bold text-slate-700 font-mono text-xs">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
+              <td></td>
+              <td></td>
+              <td></td>
+              <td></td>
+              {settings.show_tax && <td></td>}
+              <td></td>
+              <td></td>
+              <td className="px-1 py-2 text-right font-bold text-slate-800 font-mono text-xs">{net.toFixed(2)}</td>
+              <td className="pr-4 pl-1"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
 
         <div className="bg-slate-50 border-t border-slate-200 p-6 flex justify-between shrink-0">
           <div className="flex gap-8 w-1/2">
@@ -887,7 +1101,7 @@ export default function PurchaseBill() {
               {totalTax > 0 && <div className="text-right text-[10px] text-slate-400">Includes Tax: ₹{totalTax.toFixed(2)}</div>}
             </div>
 
-            <div className="flex gap-2 justify-end">
+          <div className="flex gap-2 justify-end">
               <button
                 onClick={() => {
                   setCart(Array.from({ length: DEFAULT_ROW_COUNT }, (_, index) => createEmptyRow(index + 1)));
@@ -897,29 +1111,54 @@ export default function PurchaseBill() {
                   setItemResults([]);
                   setShowItemDrop(false);
                   setBillNo(createPurchaseBillNo());
+                  setIsEditMode(false);
+                  setEditTxnDbId(null);
+                  setStatus('');
                 }}
                 className="px-6 h-10 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 font-medium transition-colors shadow-sm bg-white"
               >
-                Clear
+                {isEditMode ? 'Cancel Edit' : 'Clear'}
               </button>
               <button
                 onClick={savePurchase}
-                className="px-8 h-10 rounded-lg bg-brand hover:bg-brand-hover text-white font-medium transition-colors shadow-sm flex items-center gap-2"
+                className={`px-8 h-10 rounded-lg text-white font-medium transition-colors shadow-sm flex items-center gap-2 ${
+                  isEditMode ? 'bg-amber-500 hover:bg-amber-600' : 'bg-brand hover:bg-brand-hover'
+                }`}
               >
-                Save (Ctrl+S)
+                {isEditMode ? '✏️ Update Bill' : 'Save (Ctrl+S)'}
               </button>
             </div>
           </div>
         </div>
       </div>
       {showScanner && (
-        <ScannerPanel 
-          onClose={() => setShowScanner(false)} 
+        <ScannerPanel
+          onClose={() => setShowScanner(false)}
+          onGeminiData={(data: GeminiBillData) => {
+            // Auto-fill bill header from Gemini
+            if (data.bill_no) setBillNo(data.bill_no);
+            if (data.bill_date) {
+              // Convert DD/MM/YYYY → YYYY-MM-DD for the date state
+              const parts = data.bill_date.split('/');
+              if (parts.length === 3) {
+                const [d, m, y] = parts;
+                setBillDate(`${y.length === 2 ? '20' + y : y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`);
+              }
+            }
+            if (data.vendor) {
+              setVendorSearch(data.vendor);
+              // Try to find matching vendor in DB
+              getDB().then(db => {
+                db.select<any[]>(`SELECT * FROM parties WHERE name LIKE $1 LIMIT 1`, [`%${data.vendor}%`])
+                  .then(res => { if (res.length > 0) setVendor(res[0]); });
+              });
+            }
+          }}
           onAutoFill={(items) => {
             const newCart = [...cart];
             let targetIdx = newCart.findIndex(r => !r.itemId);
             if (targetIdx === -1) targetIdx = newCart.length;
-            
+
             items.forEach((it, i) => {
               const rowId = rowSeedRef.current++;
               const insertIdx = targetIdx + i;
@@ -929,25 +1168,25 @@ export default function PurchaseBill() {
                 name: it.name,
                 unit: it.unit || 'TAB',
                 base_unit: it.unit || 'TAB',
-                tabsPerStrip: 10,
-                stripsPerBox: 10,
+                tabsPerStrip: it.tabs_per_strip || 10,
+                stripsPerBox: it.strips_per_box || 10,
                 purchase_price: Number(it.purchase_price) || 0,
                 sale_price: Number(it.sale_price) || 0,
                 qty: it.qty_extracted || 1,
-                free: 0,
-                batch: '',
-                expiry: '',
-                mrp: Number(it.sale_price) || 0,
-                price: Number(it.purchase_price) || 0,
-                disc: Number(it.discount) || 0,
-                gst: Number(it.tax_rate) || 0,
+                free: it.free_extracted !== undefined && it.free_extracted !== null ? Number(it.free_extracted) : 0,
+                batch: it.batch_extracted || '',
+                expiry: it.exp_extracted || '',
+                mrp: Number(it.mrp_extracted) || Number(it.sale_price) || 0,
+                price: Number(it.rate_extracted) || Number(it.purchase_price) || 0,
+                disc: Number(it.disc_extracted) || 0,
+                gst: it.gst_extracted !== undefined && it.gst_extracted !== null ? Number(it.gst_extracted) : (Number(it.tax_rate) || 0),
+                scheme_amount: it.scheme_extracted !== undefined && it.scheme_extracted !== null && Number(it.scheme_extracted) !== 0 ? Number(it.scheme_extracted) : '',
               };
               if (insertIdx < newCart.length && !newCart[insertIdx].itemId) {
-                 newCart[insertIdx] = row;
-                 newCart[insertIdx].rowId = cart[insertIdx].rowId;
-                 rowSeedRef.current--;
+                newCart[insertIdx] = { ...row, rowId: cart[insertIdx].rowId };
+                rowSeedRef.current--;
               } else {
-                 newCart.splice(insertIdx, 0, row);
+                newCart.splice(insertIdx, 0, row);
               }
             });
             setCart(newCart);

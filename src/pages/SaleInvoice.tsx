@@ -1,11 +1,12 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getDB } from '@/lib/db';
-import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle } from 'lucide-react';
+import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle, Edit3 } from 'lucide-react';
 import ItemModal from '@/components/ItemModal';
-import ScannerPanel from '@/components/ScannerPanel';
+import ScannerPanel, { GeminiBillData } from '@/components/ScannerPanel';
 import QtyCalculatorModal from '@/components/QtyCalculatorModal';
 import { AppSettings, defaultSettings } from '@/pages/Settings';
+import SmartDateInput from '@/components/SmartDateInput';
 
 interface SaleItemOption {
   id: number;
@@ -28,18 +29,19 @@ interface SaleRow {
   hsn: string;
   unit: string;
   base_unit: string;
-  tabsPerStrip: number | '';
-  stripsPerBox: number | '';
-  sale_price: number | '';
-  purchase_price: number | '';
+  tabsPerStrip: string | number | '';
+  stripsPerBox: string | number | '';
+  sale_price: string | number | '';
+  purchase_price: string | number | '';
   current_stock: number;
-  qty: number | '';
-  free: number | '';
-  price: number | '';
-  disc: number | '';
-  tax_rate: number | '';
+  qty: string | number | '';
+  free: string | number | '';
+  price: string | number | '';
+  disc: string | number | '';
+  tax_rate: string | number | '';
   batch: string;
   expiry: string;
+  scheme_amount: string | number | '';
 }
 
 interface Party {
@@ -71,6 +73,7 @@ const createEmptyRow = (rowId: number): SaleRow => ({
   tax_rate: 0,
   batch: '',
   expiry: '',
+  scheme_amount: '',
 });
 
 const formatExpiryInput = (value: string) => {
@@ -83,7 +86,7 @@ const formatExpiryInput = (value: string) => {
   return `${day}-${month}-${year}`;
 };
 
-export default function SaleInvoice() {
+export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number | null; onSaved?: () => void } = {}) {
   const [party, setParty] = useState<Party | null>(null);
   const [partySearch, setPartySearch] = useState('');
   const [partyResults, setPartyResults] = useState<Party[]>([]);
@@ -112,6 +115,8 @@ export default function SaleInvoice() {
   const rowSeedRef = useRef(DEFAULT_ROW_COUNT + 1);
   const partyInputRef = useRef<HTMLInputElement>(null);
   const itemInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editTxnDbId, setEditTxnDbId] = useState<number | null>(null);
 
   async function generateInvoiceNo() {
     try {
@@ -140,6 +145,69 @@ export default function SaleInvoice() {
     };
     loadSettings();
   }, []);
+
+  // Load existing sale for editing
+  useEffect(() => {
+    if (!editTxnId) return;
+    const loadExistingTransaction = async () => {
+      try {
+        const db = await getDB();
+        const [txn] = await db.select<any[]>(
+          `SELECT t.*, p.name as party_name, p.phone as party_phone FROM transactions t LEFT JOIN parties p ON t.party_id = p.id WHERE t.id = $1`,
+          [editTxnId]
+        );
+        if (!txn) return;
+        setIsEditMode(true);
+        setEditTxnDbId(txn.id);
+        setInvoiceNo(txn.invoice_no || '');
+        setInvoiceDate(txn.date ? txn.date.split('T')[0] : new Date().toISOString().split('T')[0]);
+        setPaymentType(txn.payment_type || 'cash');
+        setChallanNo(txn.challan_no || '');
+        setDescription(txn.description || '');
+        setPaidAmount(txn.paid_amount || '');
+        if (txn.party_id && txn.party_name) {
+          setParty({ id: txn.party_id, name: txn.party_name, phone: txn.party_phone || '', opening_balance: 0 });
+          setPartySearch(txn.party_name);
+        }
+        const its = await db.select<any[]>(
+          `SELECT ti.*, i.tabs_per_strip, i.strips_per_box, i.current_stock, i.purchase_price, i.sale_price as item_sale_price FROM transaction_items ti LEFT JOIN items i ON ti.item_id = i.id WHERE ti.txn_id = $1`,
+          [editTxnId]
+        );
+        let seed = 1;
+        const loadedRows: SaleRow[] = its.map(it => ({
+          rowId: seed++,
+          itemId: it.item_id,
+          name: it.item_name || '',
+          hsn: '',
+          unit: it.unit || 'TAB',
+          base_unit: it.unit || 'TAB',
+          tabsPerStrip: it.tabs_per_strip || 10,
+          stripsPerBox: it.strips_per_box || 10,
+          sale_price: it.price || 0,
+          purchase_price: it.purchase_price || 0,
+          current_stock: it.current_stock || 0,
+          qty: it.quantity || 1,
+          free: 0 as number | '',
+          price: it.price || 0,
+          disc: it.discount_pct || 0,
+          tax_rate: it.tax_pct || 0,
+          batch: it.batch_no || '',
+          expiry: it.expiry_date || '',
+          scheme_amount: it.scheme_amount || '',
+        }));
+        rowSeedRef.current = seed + 1;
+        while (loadedRows.length < DEFAULT_ROW_COUNT) {
+          loadedRows.push(createEmptyRow(seed++));
+          rowSeedRef.current = seed + 1;
+        }
+        setCart(loadedRows);
+        setStatus('✏️ Editing existing sale invoice. Make changes and save.');
+      } catch (e) {
+        console.error('Failed to load sale for editing:', e);
+      }
+    };
+    loadExistingTransaction();
+  }, [editTxnId]);
 
   function focusRowInput(rowId?: number | null) {
     const targetId = rowId ?? cart.find(row => !row.itemId)?.rowId ?? cart[0]?.rowId ?? null;
@@ -293,19 +361,29 @@ export default function SaleInvoice() {
       const priceVal = Number(row.price) || 0;
       const discVal = Number(row.disc) || 0;
       const taxVal = Number(row.tax_rate) || 0;
+      const schemeVal = Number(row.scheme_amount) || 0;
       
       const base = priceVal * qtyVal;
       const discAmt = base * (discVal / 100);
-      const taxAmt = (base - discAmt) * (taxVal / 100);
+      const taxable = Math.max(0, base - discAmt - schemeVal);
+      const taxAmt = taxable * (taxVal / 100);
       
-      sub += base; disc += discAmt; tax += taxAmt; total += (base - discAmt + taxAmt);
+      sub += base;
+      disc += (discAmt + schemeVal);
+      tax += taxAmt;
+      total += (taxable + taxAmt);
     });
-    return { subtotal: sub, totalDiscount: disc, totalTax: tax, net: Math.round(total * 100) / 100, afterDiscount: sub - disc };
+    return { subtotal: sub, totalDiscount: disc, totalTax: tax, net: Math.round(total), afterDiscount: sub - disc };
   }, [validRows]);
 
   async function saveSale() {
     if (validRows.length === 0) {
       setStatus('❌ Add at least one item');
+      return;
+    }
+
+    if (!invoiceNo.trim()) {
+      setStatus('❌ Invoice number cannot be empty');
       return;
     }
 
@@ -315,32 +393,88 @@ export default function SaleInvoice() {
 
     try {
       const db = await getDB();
-      const res = await db.execute(
-        `INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description) VALUES ($1, $2, $3, $4, $5, $6, 'sale', $7, $8, $9, $10)`,
-        [invoiceNo, invoiceDate, party?.id || null, net, finalPaid, balanceDue, paymentType, paymentStatus, challanNo, description]
-      );
-      const txnId = Number((res as { lastInsertId?: number }).lastInsertId);
-      for (const row of validRows) {
-        const qtyVal = Number(row.qty) || 0;
-        const priceVal = Number(row.price) || 0;
-        const discVal = Number(row.disc) || 0;
-        const taxVal = Number(row.tax_rate) || 0;
-        
-        const base = priceVal * qtyVal;
-        const discAmt = base * (discVal / 100);
-        const taxAmt = (base - discAmt) * (taxVal / 100);
-        const amount = base - discAmt + taxAmt;
-        await db.execute(
-          `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, discount_amt, tax_pct, tax_amt, amount, batch_no, expiry_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [txnId, row.itemId, row.name, qtyVal, row.unit, priceVal, discVal, discAmt, taxVal, taxAmt, amount, row.batch || '', row.expiry || '']
-        );
-        let inventoryQty = qtyVal;
-        if (row.unit === 'BOX') inventoryQty = qtyVal * (Number(row.stripsPerBox) || 1) * (Number(row.tabsPerStrip) || 1);
-        else if (row.unit === 'STRIP') inventoryQty = qtyVal * (Number(row.tabsPerStrip) || 1);
 
-        await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [inventoryQty, row.itemId]);
+      // Duplicate invoice number check
+      const existing = await db.select<any[]>(
+        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'sale'${isEditMode && editTxnDbId ? ` AND id != ${editTxnDbId}` : ''}`,
+        [invoiceNo.trim()]
+      );
+      if (existing.length > 0) {
+        setStatus(`❌ Invoice "${invoiceNo.trim()}" already exists! Use a different number.`);
+        return;
       }
-      setStatus(`✅ Invoice ${invoiceNo} saved!`);
+
+      if (isEditMode && editTxnDbId) {
+        // === EDIT MODE ===
+        // Reverse old stock
+        const oldItems = await db.select<any[]>(`SELECT * FROM transaction_items WHERE txn_id = $1`, [editTxnDbId]);
+        for (const oldItem of oldItems) {
+          if (oldItem.item_id) {
+            await db.execute(`UPDATE items SET current_stock = current_stock + $1 WHERE id = $2`, [oldItem.quantity, oldItem.item_id]);
+          }
+        }
+        await db.execute(`DELETE FROM transaction_items WHERE txn_id = $1`, [editTxnDbId]);
+        await db.execute(
+          `UPDATE transactions SET invoice_no=$1, date=$2, party_id=$3, total_amount=$4, paid_amount=$5, balance_due=$6, payment_type=$7, status=$8, challan_no=$9, description=$10 WHERE id=$11`,
+          [invoiceNo, invoiceDate, party?.id || null, net, finalPaid, balanceDue, paymentType, paymentStatus, challanNo, description, editTxnDbId]
+        );
+        for (const row of validRows) {
+          const qtyVal = Number(row.qty) || 0;
+          const priceVal = Number(row.price) || 0;
+          const discVal = Number(row.disc) || 0;
+          const taxVal = Number(row.tax_rate) || 0;
+          const schemeVal = Number(row.scheme_amount) || 0;
+          const base = priceVal * qtyVal;
+          const discAmt = base * (discVal / 100);
+          const taxable = Math.max(0, base - discAmt - schemeVal);
+          const taxAmt = taxable * (taxVal / 100);
+          const amount = taxable + taxAmt;
+          await db.execute(
+            `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, discount_amt, tax_pct, tax_amt, amount, batch_no, expiry_date, scheme_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+            [editTxnDbId, row.itemId, row.name, qtyVal, row.unit, priceVal, discVal, discAmt + schemeVal, taxVal, taxAmt, amount, row.batch || '', row.expiry || '', schemeVal]
+          );
+          if (row.itemId) {
+            let inventoryQty = qtyVal;
+            if (row.unit === 'BOX') inventoryQty = qtyVal * (Number(row.stripsPerBox) || 1) * (Number(row.tabsPerStrip) || 1);
+            else if (row.unit === 'STRIP') inventoryQty = qtyVal * (Number(row.tabsPerStrip) || 1);
+            await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [inventoryQty, row.itemId]);
+          }
+        }
+        setStatus(`✅ Invoice ${invoiceNo} updated successfully!`);
+        setIsEditMode(false);
+        setEditTxnDbId(null);
+        if (onSaved) onSaved();
+
+      } else {
+        // === NEW MODE ===
+        const res = await db.execute(
+          `INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description) VALUES ($1, $2, $3, $4, $5, $6, 'sale', $7, $8, $9, $10)`,
+          [invoiceNo, invoiceDate, party?.id || null, net, finalPaid, balanceDue, paymentType, paymentStatus, challanNo, description]
+        );
+        const txnId = Number((res as { lastInsertId?: number }).lastInsertId);
+        for (const row of validRows) {
+          const qtyVal = Number(row.qty) || 0;
+          const priceVal = Number(row.price) || 0;
+          const discVal = Number(row.disc) || 0;
+          const taxVal = Number(row.tax_rate) || 0;
+          const schemeVal = Number(row.scheme_amount) || 0;
+          const base = priceVal * qtyVal;
+          const discAmt = base * (discVal / 100);
+          const taxable = Math.max(0, base - discAmt - schemeVal);
+          const taxAmt = taxable * (taxVal / 100);
+          const amount = taxable + taxAmt;
+          await db.execute(
+            `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, discount_amt, tax_pct, tax_amt, amount, batch_no, expiry_date, scheme_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+            [txnId, row.itemId, row.name, qtyVal, row.unit, priceVal, discVal, discAmt + schemeVal, taxVal, taxAmt, amount, row.batch || '', row.expiry || '', schemeVal]
+          );
+          let inventoryQty = qtyVal;
+          if (row.unit === 'BOX') inventoryQty = qtyVal * (Number(row.stripsPerBox) || 1) * (Number(row.tabsPerStrip) || 1);
+          else if (row.unit === 'STRIP') inventoryQty = qtyVal * (Number(row.tabsPerStrip) || 1);
+          await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [inventoryQty, row.itemId]);
+        }
+        setStatus(`✅ Invoice ${invoiceNo} saved!`);
+      }
+
       setCart(Array.from({ length: DEFAULT_ROW_COUNT }, (_, index) => createEmptyRow(index + 1)));
       rowSeedRef.current = DEFAULT_ROW_COUNT + 1;
       setParty(null);
@@ -421,7 +555,15 @@ export default function SaleInvoice() {
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden text-sm">
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-        <h2 className="text-xl font-bold text-slate-800">Sale</h2>
+        <div className="flex items-center gap-3">
+          {isEditMode && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 text-xs font-bold">
+              <Edit3 size={12} />
+              Editing Invoice
+            </span>
+          )}
+          <h2 className="text-xl font-bold text-slate-800">{isEditMode ? `Edit: ${invoiceNo}` : 'Sale'}</h2>
+        </div>
         <div className="flex items-center gap-4">
           <button onClick={() => setShowScanner(true)} className="flex items-center gap-2 text-xs bg-brand/10 text-brand px-3 py-1.5 rounded-lg font-bold hover:bg-brand hover:text-white transition-colors">
             <ScanLine size={14} /> Mobile Scanner
@@ -518,23 +660,24 @@ export default function SaleInvoice() {
             </div>
             <div className="flex items-center gap-4 w-64">
               <label className="text-slate-500 w-24 text-right">Bill Date</label>
-              <input
-                id="invoiceDate"
-                type="date"
-                value={invoiceDate}
-                onChange={e => setInvoiceDate(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'ArrowDown' || e.key === 'Enter') {
-                    e.preventDefault();
-                    const el = document.querySelector('[data-row="1"][data-field="name"]') as HTMLElement;
-                    if (el) el.focus();
-                  } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    document.getElementById('invoiceNo')?.focus();
-                  }
-                }}
-                className="flex-1 h-8 border-b-2 border-slate-100 focus:border-brand hover:border-slate-200 rounded-none bg-transparent px-1 focus:outline-none text-slate-700"
-              />
+              <div className="flex-1">
+                <SmartDateInput
+                  id="invoiceDate"
+                  value={invoiceDate}
+                  onChange={setInvoiceDate}
+                  onKeyDown={e => {
+                    if (e.key === 'ArrowDown' || e.key === 'Enter') {
+                      e.preventDefault();
+                      const el = document.querySelector('[data-row="1"][data-field="name"]') as HTMLElement;
+                      if (el) el.focus();
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      document.getElementById('invoiceNo')?.focus();
+                    }
+                  }}
+                  className="!h-8 !border-0 !border-b-2 !border-slate-100 focus:!border-brand hover:!border-slate-200 !rounded-none !bg-transparent !px-1 !shadow-none !font-sans text-slate-700"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -561,14 +704,15 @@ export default function SaleInvoice() {
                 <th className="pl-4 pr-1 py-2 text-left w-8">#</th>
                 <th className="px-1 py-2 text-left w-[200px]"><HeaderTip label="Item" tip={<><b>Item / Description</b><br/>દવાનું નામ અથવા વર્ણન.<br/><span className="text-slate-300">Search and select the medicine.</span></>} /></th>
                 {settings.show_mrp && <th className="px-1 py-2 text-right w-16"><HeaderTip label="MRP" tip={<><b>Max Retail Price</b><br/>મહત્તમ છૂટક કિંમત.<br/><span className="text-slate-300">Printed price on the package.</span></>} /></th>}
-                {settings.show_stock && <th className="px-1 py-2 text-right w-14"><HeaderTip label="Stock" tip={<><b>Current Stock</b><br/>હાલનો સ્ટોક.<br/><span className="text-slate-300">Available physical stock.</span></>} /></th>}
-                <th className="px-1 py-2 text-right w-16"><HeaderTip label="Qty" tip={<><b>Quantity</b><br/>જથ્થો / નંગ.<br/><span className="text-slate-300">Units being sold.</span></>} /></th>
-                <th className="px-1 py-2 text-right w-14"><HeaderTip label="Free" tip={<><b>Free Quantity</b><br/>મફત જથ્થો.<br/><span className="text-slate-300">Items given for free.</span></>} /></th>
-                <th className="px-1 py-2 text-left w-20"><HeaderTip label="Unit" tip={<><b>Unit Type</b><br/>એકમ.<br/><span className="text-slate-300">Selling unit (TAB/STRIP/BOX).</span></>} /></th>
                 <th className="px-1 py-2 text-right w-20"><HeaderTip label="Price" tip={<><b>Sale Price</b><br/>વેચાણ કિંમત.<br/><span className="text-slate-300">Customer price per unit.</span></>} /></th>
+                {settings.show_stock && <th className="px-1 py-2 text-right w-14"><HeaderTip label="Stock" tip={<><b>Current Stock</b><br/>હાલનો સ્ટોક.<br/><span className="text-slate-300">Available physical stock.</span></>} /></th>}
+                <th className="px-1 py-2 text-right w-16"><HeaderTip label="Qty" tip={<><b>Quantity</b><br/>જથ્ધો / નંગ.<br/><span className="text-slate-300">Units being sold.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-14"><HeaderTip label="Free" tip={<><b>Free Quantity</b><br/>મફત જથ્ધો.<br/><span className="text-slate-300">Items given for free.</span></>} /></th>
+                <th className="px-1 py-2 text-left w-20"><HeaderTip label="Unit" tip={<><b>Unit Type</b><br/>એકમ.<br/><span className="text-slate-300">Selling unit (TAB/STRIP/BOX).</span></>} /></th>
                 <th className="px-1 py-2 text-right w-16"><HeaderTip label="Disc%" tip={<><b>Discount Percentage</b><br/>ડિસ્કાઉન્ટ ટકાવારી.<br/><span className="text-slate-300">Discount given to customer.</span></>} /></th>
+                <th className="px-1 py-2 text-right w-16"><HeaderTip label="Scheme ₹" tip={<><b>Scheme Amount</b><br/>સ્કીમ રકમ.<br/><span className="text-slate-300">Flat scheme discount applied.</span></>} /></th>
                 {settings.show_tax && <th className="px-1 py-2 text-right w-16"><HeaderTip label="Tax%" tip={<><b>Tax Percentage</b><br/>ટેક્સ ટકાવારી.<br/><span className="text-slate-300">Tax applied to this item.</span></>} /></th>}
-                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Amount" tip={<><b>Total Amount</b><br/>કુલ રકમ.<br/><span className="font-mono text-[10px] text-green-300 mt-1 block tracking-tight">Qty × Price - Disc + Tax</span></>} /></th>
+                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Amount" tip={<><b>Total Amount</b><br/>કુલ રકમ.<br/><span className="font-mono text-[10px] text-green-300 mt-1 block tracking-tight">Qty × Price - Disc - Scheme + Tax</span></>} /></th>
                 <th className="pr-4 pl-1 py-2 w-8"></th>
               </tr>
             </thead>
@@ -578,10 +722,13 @@ export default function SaleInvoice() {
                 const priceVal = Number(row.price) || 0;
                 const discVal = Number(row.disc) || 0;
                 const taxVal = Number(row.tax_rate) || 0;
+                const schemeVal = Number(row.scheme_amount) || 0;
+                
                 const base = priceVal * qtyVal;
                 const discAmt = base * (discVal / 100);
-                const taxAmt = (base - discAmt) * (taxVal / 100);
-                const amount = base - discAmt + taxAmt;
+                const taxable = Math.max(0, base - discAmt - schemeVal);
+                const taxAmt = taxable * (taxVal / 100);
+                const amount = taxable + taxAmt;
 
                 return (
                   <React.Fragment key={row.rowId}>
@@ -693,6 +840,18 @@ export default function SaleInvoice() {
                         <div className="h-8 flex items-center justify-end text-xs">₹{row.sale_price || 0}</div>
                       </td>
                     )}
+                    <td className="px-1 py-1 align-top">
+                      <input
+                        type="text"
+                        data-row={row.rowId} data-field="price"
+                        value={row.price}
+                        onChange={e => {
+                          updateRow(row.rowId, 'price', e.target.value);
+                        }}
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'price')}
+                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                      />
+                    </td>
                     {settings.show_stock && (
                       <td className="px-1 py-1 align-top text-right text-slate-500">
                         <div className="h-8 flex items-center justify-end text-xs">{row.current_stock || 0}</div>
@@ -704,8 +863,7 @@ export default function SaleInvoice() {
                         data-row={row.rowId} data-field="qty"
                         value={row.qty}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'qty', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'qty', e.target.value);
                         }}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'qty')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
@@ -717,8 +875,7 @@ export default function SaleInvoice() {
                         data-row={row.rowId} data-field="free"
                         value={row.free}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'free', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'free', e.target.value);
                         }}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'free')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
@@ -740,27 +897,26 @@ export default function SaleInvoice() {
                     <td className="px-1 py-1 align-top">
                       <input
                         type="text"
-                        data-row={row.rowId} data-field="price"
-                        value={row.price}
+                        data-row={row.rowId} data-field="disc"
+                        value={row.disc}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'price', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'disc', e.target.value);
                         }}
-                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'price')}
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'disc')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
                       />
                     </td>
                     <td className="px-1 py-1 align-top">
                       <input
                         type="text"
-                        data-row={row.rowId} data-field="disc"
-                        value={row.disc}
+                        data-row={row.rowId} data-field="scheme_amount"
+                        value={row.scheme_amount || ''}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'disc', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'scheme_amount', e.target.value);
                         }}
-                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'disc')}
+                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'scheme_amount')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        placeholder="0"
                       />
                     </td>
                     {settings.show_tax && <td className="px-1 py-1 align-top">
@@ -769,8 +925,7 @@ export default function SaleInvoice() {
                         data-row={row.rowId} data-field="tax"
                         value={row.tax_rate}
                         onChange={e => {
-                          const val = e.target.value;
-                          updateRow(row.rowId, 'tax_rate', val === '' ? '' : Number(val));
+                          updateRow(row.rowId, 'tax_rate', e.target.value);
                         }}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'tax')}
                         className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
@@ -805,11 +960,17 @@ export default function SaleInvoice() {
                     <span className="font-medium text-slate-600">Total</span>
                   </div>
                 </td>
-                <td colSpan={settings.show_mrp && settings.show_stock ? 2 : settings.show_mrp || settings.show_stock ? 1 : 0}></td>
-                <td className="px-1 py-2 text-right font-bold text-slate-700 font-mono text-xs">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
-                <td colSpan={3 + (settings.show_tax ? 1 : 0)}></td>
-                <td className="px-1 py-2 text-right font-bold text-slate-800 font-mono text-xs">{net.toFixed(2)}</td>
+                {settings.show_mrp && <td></td>}
                 <td></td>
+                {settings.show_stock && <td></td>}
+                <td className="px-1 py-2 text-right font-bold text-slate-700 font-mono text-xs">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                {settings.show_tax && <td></td>}
+                <td className="px-1 py-2 text-right font-bold text-slate-800 font-mono text-xs">{net.toFixed(2)}</td>
+                <td className="pr-4 pl-1"></td>
               </tr>
             </tfoot>
           </table>
@@ -883,16 +1044,22 @@ export default function SaleInvoice() {
                   setPartySearch('');
                   setItemResults([]);
                   setShowItemDrop(false);
+                  setIsEditMode(false);
+                  setEditTxnDbId(null);
+                  setStatus('');
+                  generateInvoiceNo();
                 }}
                 className="px-6 h-10 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 font-medium transition-colors shadow-sm bg-white"
               >
-                Clear
+                {isEditMode ? 'Cancel Edit' : 'Clear'}
               </button>
               <button
                 onClick={saveSale}
-                className="px-8 h-10 rounded-lg bg-brand hover:bg-brand-hover text-white font-medium transition-colors shadow-sm flex items-center gap-2"
+                className={`px-8 h-10 rounded-lg text-white font-medium transition-colors shadow-sm flex items-center gap-2 ${
+                  isEditMode ? 'bg-amber-500 hover:bg-amber-600' : 'bg-brand hover:bg-brand-hover'
+                }`}
               >
-                Save (Ctrl+S)
+                {isEditMode ? '✏️ Update Invoice' : 'Save (Ctrl+S)'}
               </button>
             </div>
           </div>
@@ -901,6 +1068,26 @@ export default function SaleInvoice() {
       {showScanner && (
         <ScannerPanel 
           onClose={() => setShowScanner(false)} 
+          onGeminiData={(data: GeminiBillData) => {
+            // Auto-fill bill header from Gemini
+            if (data.bill_no) setInvoiceNo(data.bill_no);
+            if (data.bill_date) {
+              // Convert DD/MM/YYYY → YYYY-MM-DD for the date state
+              const parts = data.bill_date.split('/');
+              if (parts.length === 3) {
+                const [d, m, y] = parts;
+                setInvoiceDate(`${y.length === 2 ? '20' + y : y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`);
+              }
+            }
+            if (data.vendor) {
+              setPartySearch(data.vendor);
+              // Try to find matching customer/party in DB
+              getDB().then(db => {
+                db.select<any[]>(`SELECT * FROM parties WHERE name LIKE $1 LIMIT 1`, [`%${data.vendor}%`])
+                  .then(res => { if (res.length > 0) setParty(res[0]); });
+              });
+            }
+          }}
           onAutoFill={(items) => {
             const newCart = [...cart];
             let targetIdx = newCart.findIndex(r => !r.itemId);
@@ -909,25 +1096,26 @@ export default function SaleInvoice() {
             items.forEach((it, i) => {
               const rowId = rowSeedRef.current++;
               const insertIdx = targetIdx + i;
-              const row = {
+              const row: SaleRow = {
                 rowId,
                 itemId: it.id,
                 name: it.name,
                 hsn: it.hsn || '',
                 unit: it.unit || 'TAB',
                 base_unit: it.unit || 'TAB',
-                tabsPerStrip: 10,
-                stripsPerBox: 10,
-                sale_price: Number(it.sale_price) || 0,
-                purchase_price: Number(it.purchase_price) || 0,
+                tabsPerStrip: it.tabs_per_strip || 10,
+                stripsPerBox: it.strips_per_box || 10,
+                sale_price: Number(it.mrp_extracted) || Number(it.sale_price) || 0,
+                purchase_price: Number(it.rate_extracted) || Number(it.purchase_price) || 0,
                 current_stock: Number(it.current_stock) || 0,
                 qty: it.qty_extracted || 1,
-                price: Number(it.sale_price) || 0,
-                free: 0,
-                disc: 0,
-                tax_rate: Number(it.tax_rate) || 0,
-                batch: '',
-                expiry: ''
+                price: Number(it.mrp_extracted) || Number(it.sale_price) || 0,
+                free: it.free_extracted !== undefined && it.free_extracted !== null ? Number(it.free_extracted) : 0,
+                disc: Number(it.disc_extracted) || 0,
+                tax_rate: it.gst_extracted !== undefined && it.gst_extracted !== null ? Number(it.gst_extracted) : (Number(it.tax_rate) || 0),
+                batch: it.batch_extracted || '',
+                expiry: it.exp_extracted || '',
+                scheme_amount: it.scheme_extracted !== undefined && it.scheme_extracted !== null && Number(it.scheme_extracted) !== 0 ? Number(it.scheme_extracted) : '',
               };
               if (insertIdx < newCart.length && !newCart[insertIdx].itemId) {
                  newCart[insertIdx] = row;
