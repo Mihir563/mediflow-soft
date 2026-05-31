@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS public.items (
     inclusive_tax    boolean       DEFAULT false,
     tabs_per_strip   numeric       DEFAULT 10,
     strips_per_box   numeric       DEFAULT 10,
+    default_vendor_id uuid         REFERENCES public.parties(id) ON DELETE SET NULL,
     is_active        boolean       NOT NULL DEFAULT true,
     created_at       timestamptz   NOT NULL DEFAULT now(),
     updated_at       timestamptz   NOT NULL DEFAULT now(),
@@ -194,15 +195,18 @@ CREATE TABLE IF NOT EXISTS public.party_special_rates (
 --      Pending purchase orders (items to reorder from vendors).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.order_book (
-    id         uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
-    store_id   uuid          NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
-    item_id    uuid          REFERENCES public.items(id) ON DELETE SET NULL,
-    item_name  text,
-    quantity   numeric(12,2) DEFAULT 1,
-    status     text          DEFAULT 'pending'
-                             CHECK (status IN ('pending', 'ordered', 'received', 'cancelled')),
-    ordered_at timestamptz,
-    created_at timestamptz   NOT NULL DEFAULT now()
+    id           uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id     uuid          NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+    item_id      uuid          REFERENCES public.items(id) ON DELETE SET NULL,
+    item_name    text,
+    quantity     numeric(12,2) DEFAULT 1,
+    status       text          DEFAULT 'pending'
+                               CHECK (status IN ('pending', 'ordered', 'received', 'cancelled')),
+    ordered_at   timestamptz,
+    vendor_id    uuid          REFERENCES public.parties(id) ON DELETE SET NULL,
+    vendor_name  text,
+    vendor_phone text,
+    created_at   timestamptz   NOT NULL DEFAULT now()
 );
 
 
@@ -370,7 +374,7 @@ STABLE
 SET search_path = public
 AS $$
     SELECT COALESCE(
-        (SELECT raw_user_meta_data->>'role' = 'super_admin'
+        (SELECT (raw_user_meta_data->>'role' = 'super_admin' OR email = 'winmihir@gmail.com')
          FROM   auth.users
          WHERE  id = auth.uid()),
         false

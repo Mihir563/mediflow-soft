@@ -173,7 +173,8 @@ export default function Dashboard({ onNavigate, onEditPurchase, onEditSale }: Da
                   <th className="pl-6 py-2.5 text-left">Invoice</th>
                   <th className="px-3 py-2.5 text-left">Party</th>
                   <th className="px-3 py-2.5 text-left">Type</th>
-                  <th className="px-3 py-2.5 text-left">Date</th>
+                  <th className="px-3 py-2.5 text-left">Bill Date</th>
+                  <th className="px-3 py-2.5 text-left">Added</th>
                   <th className="px-3 py-2.5 text-right">Amount</th>
                   <th className="pl-3 pr-6 py-2.5 text-right">Status</th>
                 </tr>
@@ -197,6 +198,11 @@ export default function Dashboard({ onNavigate, onEditPurchase, onEditSale }: Da
                     </td>
                     <td className="px-3 py-3 text-slate-500 text-xs font-mono whitespace-nowrap">
                       {txn.date ? new Date(txn.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}
+                    </td>
+                    <td className="px-3 py-3 text-slate-400 text-xs whitespace-nowrap" title={txn.created_at ? new Date(txn.created_at).toLocaleString('en-IN') : ''}>
+                      {txn.created_at
+                        ? new Date(txn.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
+                        : '—'}
                     </td>
                     <td className="px-3 py-3 text-right font-bold font-mono text-slate-800 tabular-nums">
                       ₹{(txn.total_amount ?? 0).toFixed(2)}

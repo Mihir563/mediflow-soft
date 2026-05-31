@@ -1450,16 +1450,33 @@ VALUES
         // Core Roadmap Phase Datastore containing customized structured activities
         let roadmapData = [
             {
+                phaseId: 0,
+                title: "Core App Stability & Production Bug Fixes",
+                description: "Critical production bugs fixed and deployed before cloud migration proceeds.",
+                duration: "Completed",
+                tasks: [
+                    { id: "p0-t1", label: "Fix Save Button — Stale Closure in Ctrl+S Shortcut", desc: "Ctrl+S and F10 sometimes saved stale data due to React useEffect closure bug in SaleInvoice.tsx and PurchaseBill.tsx. Fixed with saveSaleRef/savePurchaseRef using useRef.", time: "2 hrs", priority: "critical", checked: true },
+                    { id: "p0-t2", label: "Fix Dashboard Not Loading in Offline Mode", desc: "Dashboard stats were empty when no cloud store was active. Added full SQLite local fallback in useDashboardStats() in useStoreData.ts.", time: "3 hrs", priority: "critical", checked: true },
+                    { id: "p0-t3", label: "Add Bill Added Date (created_at) Column & Filter", desc: "Added created_at to transactions table via safe migration. Dashboard shows Bill Date vs Added columns. PurchaseHistory has date filter by either field.", time: "2 hrs", priority: "high", checked: true },
+                    { id: "p0-t4", label: "Invoice Duplicate Check — Financial Year Scoped", desc: "Invoice number uniqueness was global. Supplier INV-1024 from FY 2024-25 would block FY 2025-26. Fixed in SaleInvoice.tsx and PurchaseBill.tsx with Apr 1-Mar 31 boundaries.", time: "1 hr", priority: "high", checked: true },
+                    { id: "p0-t5", label: "FY-Aware Auto Invoice Number Generator", desc: "Auto-generated invoice numbers counted all-time sales. Now counts only current FY sales so numbers restart correctly each April.", time: "30 min", priority: "medium", checked: true },
+                    { id: "p0-t6", label: "AI Scanner: Qty / Price / MRP Confusion Fix", desc: "Rewrote Gemini prompt with explicit rules for QTY, PRICE (purchase rate) vs MRP distinction. Added automatic price/MRP swap sanity check if AI returns price > MRP.", time: "2 hrs", priority: "high", checked: true },
+                    { id: "p0-t7", label: "AI Scanner: Fix Model Fallback List", desc: "Removed non-existent gemini-3.5-flash causing silent scan failures. Now correctly uses gemini-2.5-flash then 2.0-flash then 1.5-flash.", time: "30 min", priority: "high", checked: true },
+                    { id: "p0-t8", label: "AI Scanner: Large Bill Support (8192 tokens)", desc: "Bumped maxOutputTokens to 8192. Added finishReason=MAX_TOKENS detection with clear user-facing error message.", time: "30 min", priority: "medium", checked: true }
+                ]
+            },
+            {
                 phaseId: 1,
                 title: "Supabase Setup & Auth Core",
                 description: "Establish cloud instance, compile standard relational tables, and instantiate user logins.",
                 duration: "Week 1-2",
                 tasks: [
-                    { id: "p1-t1", label: "Provision Supabase Cloud Instance", desc: "Create new cluster under Supabase project dashboard and fetch API tokens & Postgres credentials.", time: "2 hrs", priority: "critical", checked: true },
-                    { id: "p1-t2", label: "Execute Database Schema Migrations", desc: "Run core SQL structures (stores, store_users, items, parties, transactions) on Supabase PostgreSQL query manager.", time: "4 hrs", priority: "critical", checked: true },
-                    { id: "p1-t3", label: "Enforce Row Level Security (RLS)", desc: "Enable RLS for multi-tenant protection. Implement tenant policies so client queries only yield items matched to their store.", time: "6 hrs", priority: "high", checked: false },
-                    { id: "p1-t4", label: "Email / Password Login & Store Selection", desc: "Build auth flow. Cache the JWT securely in NextJS client context and prompt user to select active store if linked to multiple.", time: "8 hrs", priority: "high", checked: false },
-                    { id: "p1-t5", label: "Super Admin Store Creation API", desc: "Build admin action within the main desktop app to let Super Admin add new stores, issue default owner accounts, and configure permissions.", time: "6 hrs", priority: "medium", checked: false }
+                    { id: "p1-t1", label: "Provision Supabase Cloud Instance", desc: "Done. Project URL: qfxnpnhntjupqmrfztdg.supabase.co. API keys stored in .env.local.", time: "2 hrs", priority: "critical", checked: true },
+                    { id: "p1-t2", label: "Execute Database Schema Migrations", desc: "Done. Core SQL structures (stores, store_users, items, parties, transactions) are live on Supabase PostgreSQL.", time: "4 hrs", priority: "critical", checked: true },
+                    { id: "p1-t3", label: "Fix Auth 500 Error — Recreate Store Owner Account", desc: "BLOCKER: Login returns 500 'Database error querying schema'. Fix: delete corrupt user via Supabase SQL Editor, recreate via Auth dashboard UI, re-run store linking SQL.", time: "1 hr", priority: "critical", checked: false },
+                    { id: "p1-t4", label: "Enforce Row Level Security (RLS)", desc: "Enable RLS for multi-tenant protection. Implement tenant policies so client queries only yield items matched to their store.", time: "6 hrs", priority: "high", checked: false },
+                    { id: "p1-t5", label: "Email / Password Login & Store Selection", desc: "Build auth flow. Cache JWT securely in context and prompt user to select active store if linked to multiple.", time: "8 hrs", priority: "high", checked: false },
+                    { id: "p1-t6", label: "Migrate Raghuveer Medical Data to Cloud", desc: "Wipe partial migration in Supabase SQL Editor, then re-run full_setup_and_migrate.cjs to push all SQLite data cleanly.", time: "2 hrs", priority: "high", checked: false }
                 ]
             },
             {
@@ -1468,11 +1485,11 @@ VALUES
                 description: "Integrate Supabase SDK and refactor existing billing client pages to query dynamic cloud databases.",
                 duration: "Week 3-5",
                 tasks: [
-                    { id: "p2-t1", label: "Establish DB Service Layer Abstraction", desc: "Create unified entry point for queries. Introduce repository handlers so DB transactions use Supabase clients when online.", time: "8 hrs", priority: "high", checked: false },
-                    { id: "p2-t2", label: "Refactor Dashboard Statistics & Sales Panels", desc: "Rewrite aggregates on Dashboard.tsx and items list pagination inside Items.tsx to pull dynamically from cloud DB.", time: "6 hrs", priority: "medium", checked: false },
-                    { id: "p2-t3", label: "Rebuild SaleInvoice & PurchaseBill Queries", desc: "Refactor complex invoice workflows in SaleInvoice.tsx (1136 lines) and PurchaseBill.tsx to process inserts and updates through Supabase transaction logic.", time: "16 hrs", priority: "high", checked: false },
-                    { id: "p2-t4", label: "Migrate Party Special Rates & Inventory Auditing", desc: "Refactor Parties.tsx and custom price mappings under party_special_rates to support instant calculations during billing.", time: "8 hrs", priority: "medium", checked: false },
-                    { id: "p2-t5", label: "Integrate Sidebar Settings & User context", desc: "Ensure active store branding logo, active store title, cashier role limitations, and logout are globally reactive.", time: "4 hrs", priority: "low", checked: false }
+                    { id: "p2-t1", label: "Establish DB Service Layer Abstraction", desc: "useStoreData.ts started — Dashboard has SQLite fallback. Extend pattern to Items, Parties, Reports pages.", time: "8 hrs", priority: "high", checked: false },
+                    { id: "p2-t2", label: "Refactor Dashboard Statistics & Sales Panels", desc: "Dashboard.tsx has offline SQLite fallback. Needs cloud reads when logged in.", time: "6 hrs", priority: "medium", checked: false },
+                    { id: "p2-t3", label: "Rebuild SaleInvoice & PurchaseBill Queries", desc: "Refactor invoice workflows to write to Supabase when online, with offline SQLite fallback and sync_log queue.", time: "16 hrs", priority: "high", checked: false },
+                    { id: "p2-t4", label: "Migrate Party Special Rates & Inventory Auditing", desc: "Refactor Parties.tsx and custom price mappings under party_special_rates for instant calculations during billing.", time: "8 hrs", priority: "medium", checked: false },
+                    { id: "p2-t5", label: "Integrate Sidebar Settings & User Context", desc: "Active store branding, cashier role limits, and logout must be globally reactive across all pages.", time: "4 hrs", priority: "low", checked: false }
                 ]
             },
             {
@@ -1481,9 +1498,9 @@ VALUES
                 description: "Implement direct receipts and invoice printing via desktop spooler or browser system print dialogs.",
                 duration: "Week 6",
                 tasks: [
-                    { id: "p3-t1", label: "Develop CSS print stylesheets for 80mm & 58mm", desc: "Design dedicated printer-friendly CSS layouts with specific font sizing and dashed receipt lines for clean thermal printing.", time: "4 hrs", priority: "high", checked: false },
-                    { id: "p3-t2", label: "Implement printing settings schema in DB", desc: "Save configurations like printer target, paper size, auto-print toggles inside the per-store app_settings database.", time: "4 hrs", priority: "medium", checked: false },
-                    { id: "p3-t3", label: "Integrate automatic receipt printing in Tauri client", desc: "Wire print commands directly to the invoice submission button. Trigger printer dialog automatically once the sale is confirmed.", time: "6 hrs", priority: "high", checked: false }
+                    { id: "p3-t1", label: "Develop CSS print stylesheets for 80mm & 58mm", desc: "Printer-friendly CSS layouts with font sizing and dashed receipt lines for clean thermal printing.", time: "4 hrs", priority: "high", checked: false },
+                    { id: "p3-t2", label: "Implement printing settings schema in DB", desc: "Save printer target, paper size, auto-print toggles in per-store app_settings.", time: "4 hrs", priority: "medium", checked: false },
+                    { id: "p3-t3", label: "Integrate automatic receipt printing in Tauri client", desc: "Wire print commands to invoice submit button. Trigger printer dialog once sale is confirmed.", time: "6 hrs", priority: "high", checked: false }
                 ]
             },
             {
@@ -1492,38 +1509,39 @@ VALUES
                 description: "Build robust system to log local transactions to SQLite when offline and push them to cloud on recovery.",
                 duration: "Week 7-8",
                 tasks: [
-                    { id: "p4-t1", label: "Create SQLite Sync Outbox Queue Schema", desc: "Define the local synchronization table mirror inside SQLite to record offline modifications (sync_log table).", time: "6 hrs", priority: "high", checked: false },
-                    { id: "p4-t2", label: "Develop Online / Offline Indicator Widget", desc: "Create status component in navigation bar tracking system heartbeat and alert user when offline operations are active.", time: "4 hrs", priority: "low", checked: false },
-                    { id: "p4-t3", label: "Build Outbox Sync Background Supervisor", desc: "Implement scheduled task checking client network status. Automatically push all pending SQLite changes to Supabase upon recovery.", time: "12 hrs", priority: "high", checked: false },
-                    { id: "p4-t4", label: "Integrate Server-Wins Conflict Resolver", desc: "Write conflict resolution script. In case of matching record updates, apply the cloud server's record while retaining client outbox logs for safety.", time: "8 hrs", priority: "medium", checked: false }
+                    { id: "p4-t1", label: "Create SQLite Sync Outbox Queue Schema", desc: "Define local synchronization table in SQLite to record offline modifications (sync_log table).", time: "6 hrs", priority: "high", checked: false },
+                    { id: "p4-t2", label: "Develop Online / Offline Indicator Widget", desc: "Status component in navigation bar tracking system heartbeat and alerting user when offline ops are active.", time: "4 hrs", priority: "low", checked: false },
+                    { id: "p4-t3", label: "Build Outbox Sync Background Supervisor", desc: "Scheduled task checking network status. Automatically pushes pending SQLite changes to Supabase upon recovery.", time: "12 hrs", priority: "high", checked: false },
+                    { id: "p4-t4", label: "Integrate Server-Wins Conflict Resolver", desc: "Conflict resolution script applying cloud record on matching updates while retaining client outbox logs.", time: "8 hrs", priority: "medium", checked: false }
                 ]
             },
             {
                 phaseId: 5,
                 title: "In-App Admin Control & Release Polish",
-                description: "Deliver super-user management pages directly inside the desktop interface, verify RLS, and perform stress testing.",
+                description: "Super-user management pages inside the desktop interface, RLS verification, and stress testing.",
                 duration: "Week 9-10",
                 tasks: [
-                    { id: "p5-t1", label: "Super Admin Control Dashboard", desc: "Design UI dashboard inside settings tab for super user to create stores, change billing structures, and audit connections.", time: "8 hrs", priority: "medium", checked: false },
-                    { id: "p5-t2", label: "Cashier Management Panel (Store Owner)", desc: "Build clean, user-friendly cashier management screen letting owners invite cashiers, reset passwords, and audit receipts.", time: "6 hrs", priority: "medium", checked: false },
-                    { id: "p5-t3", label: "Enforce API Rate Limiting & RLS Audits", desc: "Configure Supabase connection rate limits. Run comprehensive security script asserting that User B cannot query Store A's invoices.", time: "6 hrs", priority: "high", checked: false },
-                    { id: "p5-t4", label: "Execute SQLite to Supabase Initial Migration Data", desc: "Create import script to load existing production data (~1MB SQLite file) straight into the live SaaS Supabase instance.", time: "6 hrs", priority: "high", checked: false }
+                    { id: "p5-t1", label: "Super Admin Control Dashboard", desc: "UI dashboard in settings tab for super user to create stores, change billing structures, and audit connections.", time: "8 hrs", priority: "medium", checked: false },
+                    { id: "p5-t2", label: "Cashier Management Panel (Store Owner)", desc: "Cashier management screen letting owners invite cashiers, reset passwords, and audit receipts.", time: "6 hrs", priority: "medium", checked: false },
+                    { id: "p5-t3", label: "Enforce API Rate Limiting & RLS Audits", desc: "Configure Supabase rate limits. Security test asserting User B cannot query Store A's invoices.", time: "6 hrs", priority: "high", checked: false },
+                    { id: "p5-t4", label: "Execute SQLite to Supabase Full Migration", desc: "Clean wipe + re-run migration script to push all production SQLite data to Supabase Cloud.", time: "6 hrs", priority: "high", checked: false }
                 ]
             },
             {
                 phaseId: 6,
                 title: "React Native Mobile App (Future Extension)",
-                description: "Extend multi-tenant billing straight to mobile devices for store owners to audit invoices and track stocks.",
+                description: "Extend multi-tenant billing to mobile devices for store owners to audit invoices and track stocks.",
                 duration: "Week 11+",
                 tasks: [
-                    { id: "p6-t1", label: "React Native Project Base Scaffolding", desc: "Configure mobile monorepo client structure sharing schemas and validations with NextJS core desktop.", time: "8 hrs", priority: "medium", checked: false },
-                    { id: "p6-t2", label: "Mobile Authentication & Store Selection", desc: "Build mobile login screens linking to Supabase Auth system and load selected store state.", time: "6 hrs", priority: "medium", checked: false },
-                    { id: "p6-t3", label: "Rebuild POS Billing Layout for Mobile Sheets", desc: "Design mobile-friendly invoice calculator, scanning capability using native camera feed, and list interfaces.", time: "16 hrs", priority: "high", checked: false }
+                    { id: "p6-t1", label: "React Native Project Base Scaffolding", desc: "Mobile monorepo sharing schemas and validations with NextJS core desktop.", time: "8 hrs", priority: "medium", checked: false },
+                    { id: "p6-t2", label: "Mobile Authentication & Store Selection", desc: "Mobile login screens linking to Supabase Auth and loading selected store state.", time: "6 hrs", priority: "medium", checked: false },
+                    { id: "p6-t3", label: "Rebuild POS Billing Layout for Mobile Sheets", desc: "Mobile-friendly invoice calculator, scanning with native camera, and list interfaces.", time: "16 hrs", priority: "high", checked: false }
                 ]
             }
         ];
 
         // SQL table structures
+
         let databaseTables = [
             {
                 name: "stores",

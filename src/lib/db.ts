@@ -6,8 +6,11 @@ let dbInstance: Database | null = null;
 const safeAddColumn = async (db: Database, table: string, column: string, type: string) => {
   try {
     await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-  } catch (_) {
-    // Column already exists — ignore
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    if (!msg.includes('duplicate column') && !msg.includes('already exists')) {
+      console.warn(`safeAddColumn error adding ${column} to ${table}:`, e);
+    }
   }
 };
 
@@ -63,6 +66,7 @@ export const initDB = async () => {
       status TEXT DEFAULT 'paid',
       challan_no TEXT,
       description TEXT,
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
       FOREIGN KEY(party_id) REFERENCES parties(id)
     )
   `);
@@ -95,8 +99,42 @@ export const initDB = async () => {
   await safeAddColumn(dbInstance, 'transaction_items', 'scheme_amount', 'REAL DEFAULT 0');
   await safeAddColumn(dbInstance, 'items', 'tabs_per_strip', 'REAL DEFAULT 10');
   await safeAddColumn(dbInstance, 'items', 'strips_per_box', 'REAL DEFAULT 10');
+  await safeAddColumn(dbInstance, 'items', 'default_vendor_id', 'INTEGER');
   await safeAddColumn(dbInstance, 'order_book', 'status', "TEXT DEFAULT 'pending'");
   await safeAddColumn(dbInstance, 'order_book', 'ordered_at', "TEXT");
+  await safeAddColumn(dbInstance, 'order_book', 'vendor_id', "INTEGER");
+  await safeAddColumn(dbInstance, 'order_book', 'vendor_name', "TEXT");
+  await safeAddColumn(dbInstance, 'order_book', 'vendor_phone', "TEXT");
+  // Add created_at to transactions if it doesn't exist yet (for existing DBs)
+  await safeAddColumn(dbInstance, 'transactions', 'created_at', "TEXT");
+
+  // Backfill created_at for older transactions
+  try {
+    await dbInstance.execute(`
+      UPDATE transactions 
+      SET created_at = date || ' 12:00:00' 
+      WHERE created_at IS NULL AND date IS NOT NULL
+    `);
+  } catch (e) {
+    console.error("Failed to backfill transactions created_at:", e);
+  }
+
+  // Create trigger to automatically set created_at for future inserts where it's NULL
+  try {
+    await dbInstance.execute(`
+      CREATE TRIGGER IF NOT EXISTS trg_transactions_created_at
+      AFTER INSERT ON transactions
+      FOR EACH ROW
+      WHEN NEW.created_at IS NULL
+      BEGIN
+        UPDATE transactions 
+        SET created_at = datetime('now', 'localtime') 
+        WHERE id = NEW.id;
+      END;
+    `);
+  } catch (e) {
+    console.error("Failed to create trigger trg_transactions_created_at:", e);
+  }
 
   // Party Special Rates
   await dbInstance.execute(`
@@ -138,6 +176,7 @@ export const initDB = async () => {
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_transactions_invoice ON transactions(invoice_no)`);
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_transactions_party ON transactions(party_id)`);
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type)`);
+  await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_transactions_created ON transactions(created_at)`);
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_txn_items_txn ON transaction_items(txn_id)`);
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_txn_items_item ON transaction_items(item_id)`);
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_txn_items_batch ON transaction_items(batch_no)`);
@@ -151,3 +190,30 @@ export const getDB = async () => {
   }
   return dbInstance;
 };
+
+// Tables synced with cloud
+export const SYNC_TABLES = [
+  'items',
+  'parties',
+  'transactions',
+  'transaction_items',
+  'order_book',
+  'party_special_rates',
+  'app_settings',
+] as const;
+
+export type SyncTable = typeof SYNC_TABLES[number];
+
+export async function getLocalStats(): Promise<Record<string, number>> {
+  const db = await getDB();
+  const stats: Record<string, number> = {};
+  for (const table of SYNC_TABLES) {
+    try {
+      const res = await db.select<{ cnt: number }[]>(`SELECT COUNT(*) as cnt FROM ${table}`);
+      stats[table] = res[0]?.cnt || 0;
+    } catch {
+      stats[table] = 0;
+    }
+  }
+  return stats;
+}

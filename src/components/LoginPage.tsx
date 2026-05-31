@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Eye, EyeOff, Activity, Loader2, AlertCircle, Mail, Lock, ShieldCheck, Sparkles, Server } from 'lucide-react';
+import { Eye, EyeOff, Loader2, AlertCircle, Mail, Lock, ShieldCheck, Sparkles, Server } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
+import { MediFlowLogo } from './MediFlowLogo';
 
 export default function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   const { signIn, loading: authLoading } = useAuth();
@@ -100,7 +101,7 @@ export default function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
         {/* Logo and system designation */}
         <div className="flex items-center gap-3 relative z-10 animate-fade-in">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <Activity size={18} className="text-white" />
+            <MediFlowLogo size={20} className="text-white" />
           </div>
           <div>
             <h2 className="text-lg font-bold text-white tracking-tight leading-none">MediFlow</h2>
@@ -193,7 +194,7 @@ export default function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
           <div className="flex flex-col items-center mb-8">
             {/* Show simple logo on mobile header */}
             <div className="lg:hidden w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25 mb-4">
-              <Activity size={22} className="text-white" />
+              <MediFlowLogo size={24} className="text-white" />
             </div>
             
             <h2 className="text-2xl font-extrabold text-white tracking-tight">Welcome Back</h2>

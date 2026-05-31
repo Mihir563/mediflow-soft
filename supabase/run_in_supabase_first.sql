@@ -103,12 +103,12 @@ BEGIN
 
         INSERT INTO auth.identities (
             id, user_id, provider_id, identity_data,
-            provider, last_sign_in_at, created_at, updated_at
+            provider, last_sign_in_at, created_at, updated_at, email
         )
         VALUES (
             gen_random_uuid(), v_user_id, v_user_id::text,
             jsonb_build_object('sub', v_user_id::text, 'email', p_owner_email),
-            'email', now(), now(), now()
+            'email', now(), now(), now(), p_owner_email
         );
     ELSE
         v_user_id := v_existing_user_id;

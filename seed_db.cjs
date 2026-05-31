@@ -7,7 +7,7 @@ const path = require('path');
 const XLSX = require('xlsx');
 const BetterSqlite = require('better-sqlite3');
 
-const DB_PATH = path.join(process.env.APPDATA, 'com.tauri.dev', 'mediflow.db');
+const DB_PATH = path.join(process.env.APPDATA, 'com.mediflow.app', 'mediflow.db');
 const ITEMS_FILE = path.join(__dirname, 'data', 'Export Items (1).xlsx');
 const PARTIES_FILE = path.join(__dirname, 'data', 'PartyReport , data of parties.xlsx');
 const ALL_TXN_FILE = path.join(__dirname, 'data', 'AllTransactionsReport_01_03_19_to_31_03_26, data for the details of all medicals.xlsx');
@@ -81,9 +81,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_txn_items_txn ON transaction_items(txn_id);
 `);
 
-// Clear old data
-console.log('Clearing old data...');
+// Clear old data for a clean import
+console.log('Clearing old database records for a fresh Excel import...');
+db.exec('PRAGMA foreign_keys = OFF;');
 db.exec(`DELETE FROM transaction_items; DELETE FROM transactions; DELETE FROM parties; DELETE FROM items;`);
+db.exec('PRAGMA foreign_keys = ON;');
 
 // ── 1. Seed Items ──────────────────────────────────────────────
 console.log('\n📦 Reading Items...');

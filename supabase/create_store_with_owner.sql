@@ -88,7 +88,8 @@ BEGIN
             provider,
             last_sign_in_at,
             created_at,
-            updated_at
+            updated_at,
+            email
         )
         VALUES (
             gen_random_uuid(),
@@ -101,7 +102,8 @@ BEGIN
             'email',
             now(),
             now(),
-            now()
+            now(),
+            p_owner_email
         );
     ELSE
         v_user_id := v_existing_user_id;

@@ -91,47 +91,93 @@ export function useDashboardStats() {
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    if (!activeStore) return;
     setLoading(true);
 
     const today = new Date().toISOString().split('T')[0];
-    const storeId = activeStore.id;
 
+    // ── Cloud mode (logged in to Supabase store) ─────────────────────────
+    if (activeStore) {
+      const storeId = activeStore.id;
+      try {
+        const [todaySaleRes, todayPurRes, itemsRes, partiesRes, recentRes, allSaleRes, allPurRes, pendingRes] =
+          await Promise.all([
+            supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'sale').gte('date', today),
+            supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'purchase').gte('date', today),
+            supabase.from('items').select('id', { count: 'exact', head: true }).eq('store_id', storeId).eq('is_active', true),
+            supabase.from('parties').select('id', { count: 'exact', head: true }).eq('store_id', storeId).eq('is_active', true),
+            supabase.from('transactions').select('id, invoice_no, date, created_at, total_amount, paid_amount, balance_due, type, payment_type, status, party_id, parties(name)').eq('store_id', storeId).order('created_at', { ascending: false }).limit(15),
+            supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'sale'),
+            supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'purchase'),
+            supabase.from('transactions').select('balance_due').eq('store_id', storeId).eq('status', 'unpaid'),
+          ]);
+
+        const sum = (rows: any[]) => rows?.reduce((s, r) => s + (Number(r.total_amount) || 0), 0) ?? 0;
+
+        setStats({
+          todaySales:          sum(todaySaleRes.data ?? []),
+          todayInvoices:       todaySaleRes.data?.length ?? 0,
+          todayPurchases:      sum(todayPurRes.data ?? []),
+          todayPurchaseCount:  todayPurRes.data?.length ?? 0,
+          totalItems:          itemsRes.count ?? 0,
+          totalParties:        partiesRes.count ?? 0,
+          totalSalesAllTime:   sum(allSaleRes.data ?? []),
+          totalPurchasesAllTime: sum(allPurRes.data ?? []),
+          pendingBalance:      (pendingRes.data ?? []).reduce((s, r) => s + (Number(r.balance_due) || 0), 0),
+        });
+
+        setRecentTxns(
+          (recentRes.data ?? []).map((t: any) => ({
+            ...t,
+            party_name: (t.parties as any)?.name ?? null,
+          }))
+        );
+      } catch (e: any) {
+        console.error('[useDashboardStats cloud]', e.message);
+      }
+      setLoading(false);
+      return;
+    }
+
+    // ── Local SQLite fallback (desktop app without cloud login) ──────────
     try {
-      const [todaySaleRes, todayPurRes, itemsRes, partiesRes, recentRes, allSaleRes, allPurRes, pendingRes] =
+      const { getDB } = await import('@/lib/db');
+      const db = await getDB();
+
+      const [todaySales, todayPurchases, allItems, allParties, recentTxnsRows, allSales, allPurchases, pending] =
         await Promise.all([
-          supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'sale').gte('date', today),
-          supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'purchase').gte('date', today),
-          supabase.from('items').select('id', { count: 'exact', head: true }).eq('store_id', storeId).eq('is_active', true),
-          supabase.from('parties').select('id', { count: 'exact', head: true }).eq('store_id', storeId).eq('is_active', true),
-          supabase.from('transactions').select('id, invoice_no, date, total_amount, paid_amount, balance_due, type, payment_type, status, party_id, parties(name)').eq('store_id', storeId).order('created_at', { ascending: false }).limit(15),
-          supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'sale'),
-          supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'purchase'),
-          supabase.from('transactions').select('balance_due').eq('store_id', storeId).eq('status', 'unpaid'),
+          db.select<any[]>(`SELECT total_amount FROM transactions WHERE type='sale' AND date >= $1`, [today]),
+          db.select<any[]>(`SELECT total_amount FROM transactions WHERE type='purchase' AND date >= $1`, [today]),
+          db.select<any[]>(`SELECT COUNT(*) as cnt FROM items`),
+          db.select<any[]>(`SELECT COUNT(*) as cnt FROM parties`),
+          db.select<any[]>(
+            `SELECT t.*, p.name as party_name
+             FROM transactions t
+             LEFT JOIN parties p ON t.party_id = p.id
+             ORDER BY COALESCE(t.created_at, t.date) DESC
+             LIMIT 15`
+          ),
+          db.select<any[]>(`SELECT total_amount FROM transactions WHERE type='sale'`),
+          db.select<any[]>(`SELECT total_amount FROM transactions WHERE type='purchase'`),
+          db.select<any[]>(`SELECT balance_due FROM transactions WHERE status='unpaid'`),
         ]);
 
-      const sum = (rows: any[]) => rows?.reduce((s, r) => s + (Number(r.total_amount) || 0), 0) ?? 0;
+      const sum = (rows: any[]) => rows.reduce((s, r) => s + (Number(r.total_amount) || 0), 0);
 
       setStats({
-        todaySales:          sum(todaySaleRes.data ?? []),
-        todayInvoices:       todaySaleRes.data?.length ?? 0,
-        todayPurchases:      sum(todayPurRes.data ?? []),
-        todayPurchaseCount:  todayPurRes.data?.length ?? 0,
-        totalItems:          itemsRes.count ?? 0,
-        totalParties:        partiesRes.count ?? 0,
-        totalSalesAllTime:   sum(allSaleRes.data ?? []),
-        totalPurchasesAllTime: sum(allPurRes.data ?? []),
-        pendingBalance:      (pendingRes.data ?? []).reduce((s, r) => s + (Number(r.balance_due) || 0), 0),
+        todaySales:            sum(todaySales),
+        todayInvoices:         todaySales.length,
+        todayPurchases:        sum(todayPurchases),
+        todayPurchaseCount:    todayPurchases.length,
+        totalItems:            allItems[0]?.cnt ?? 0,
+        totalParties:          allParties[0]?.cnt ?? 0,
+        totalSalesAllTime:     sum(allSales),
+        totalPurchasesAllTime: sum(allPurchases),
+        pendingBalance:        pending.reduce((s, r) => s + (Number(r.balance_due) || 0), 0),
       });
 
-      setRecentTxns(
-        (recentRes.data ?? []).map((t: any) => ({
-          ...t,
-          party_name: (t.parties as any)?.name ?? null,
-        }))
-      );
+      setRecentTxns(recentTxnsRows);
     } catch (e: any) {
-      console.error('[useDashboardStats]', e.message);
+      console.error('[useDashboardStats local]', e.message);
     }
     setLoading(false);
   }, [activeStore?.id]);

@@ -2,20 +2,21 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import FastBilling from '@/components/FastBilling';
-import Dashboard from '@/pages/Dashboard';
-import SaleInvoice from '@/pages/SaleInvoice';
-import PurchaseBill from '@/pages/PurchaseBill';
-import PurchaseHistory from '@/pages/PurchaseHistory';
-import Parties from '@/pages/Parties';
-import Items from '@/pages/Items';
-import Reports from '@/pages/Reports';
-import Settings from '@/pages/Settings';
-import OrderBook from '@/pages/OrderBook';
+import Dashboard from '@/views/Dashboard';
+import SaleInvoice from '@/views/SaleInvoice';
+import PurchaseBill from '@/views/PurchaseBill';
+import PurchaseHistory from '@/views/PurchaseHistory';
+import Parties from '@/views/Parties';
+import Items from '@/views/Items';
+import Reports from '@/views/Reports';
+import Settings from '@/views/Settings';
+import OrderBook from '@/views/OrderBook';
 import GlobalSearch from '@/components/GlobalSearch';
 import LoginPage from '@/components/LoginPage';
 import StoreSelector from '@/components/StoreSelector';
 import AdminDashboard from '@/components/AdminDashboard';
 import { useAuth } from '@/lib/AuthContext';
+import { MediFlowLogo } from '@/components/MediFlowLogo';
 import {
   LayoutDashboard, Zap, FileText, ShoppingCart,
   Users, Package, BarChart3, Settings2, ChevronRight,
@@ -118,7 +119,7 @@ export default function Home() {
       <div className="flex h-screen w-screen items-center justify-center bg-slate-950">
         <div className="flex flex-col items-center gap-3">
           <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg,#2563eb,#7c3aed)' }}>
-            <Activity size={22} className="text-white" />
+            <MediFlowLogo size={24} className="text-white" />
           </div>
           <div className="w-6 h-6 border-2 border-slate-600 border-t-indigo-500 rounded-full animate-spin" />
         </div>
@@ -141,6 +142,52 @@ export default function Home() {
     return <StoreSelector />;
   }
 
+  // If the selected store is suspended, show a premium warning block
+  if (!isSuperAdmin && activeStore && !activeStore.is_active) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-slate-950 font-sans relative overflow-hidden">
+        {/* Glowing background meshes */}
+        <div className="absolute inset-0 pointer-events-none z-0">
+          <div className="absolute rounded-full opacity-20 blur-[130px]" style={{ background: 'radial-gradient(circle, #ef4444 0%, transparent 60%)', width: 600, height: 600, top: '20%', left: '30%' }} />
+        </div>
+
+        <div
+          className="relative z-10 w-full max-w-md mx-4 px-8 py-10 text-center border border-red-500/20"
+          style={{
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(24px)',
+            borderRadius: 24,
+            boxShadow: '0 32px 64px -12px rgba(0,0,0,0.8)',
+          }}
+        >
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-rose-600 flex items-center justify-center mx-auto mb-6 text-white shadow-lg shadow-red-900/30">
+            <Shield size={28} />
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">Access Denied</h2>
+          <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+            Your store space <strong className="text-white">"{activeStore.name}"</strong> has been suspended by the administrator. Please contact store support or reach out to MediFlow administration for assistance.
+          </p>
+          <div className="flex flex-col gap-3">
+            {profile && profile.stores.length > 1 && (
+              <button
+                onClick={signOut}
+                className="w-full h-11 bg-brand hover:bg-brand-hover text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-blue-900/30"
+              >
+                Switch Store Space
+              </button>
+            )}
+            <button
+              onClick={signOut}
+              className="w-full h-11 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold text-sm transition-all border border-white/5"
+            >
+              Sign Out Account
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Normal billing app (store selected)
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans">
@@ -149,7 +196,7 @@ export default function Home() {
         <div className="px-4 py-4 border-b border-sidebar-border-color flex items-center justify-between">
           <div className="flex items-center gap-2 overflow-hidden">
             <div className="w-8 h-8 rounded-lg bg-brand flex-shrink-0 flex items-center justify-center">
-              <Activity size={16} className="text-white" />
+              <MediFlowLogo size={18} className="text-white" />
             </div>
             {!sidebarCollapsed && (
               <div className="whitespace-nowrap">

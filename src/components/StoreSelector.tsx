@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import { supabase, Store } from '@/lib/supabase';
-import { Activity, ChevronRight, Loader2 } from 'lucide-react';
+import { ChevronRight, Loader2 } from 'lucide-react';
+import { MediFlowLogo } from './MediFlowLogo';
 
 /**
  * StoreSelector — shown after login when the user belongs to multiple stores.
@@ -78,7 +79,7 @@ export default function StoreSelector() {
               className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
               style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)', boxShadow: '0 0 24px rgba(99,102,241,0.35)' }}
             >
-              <Activity size={22} className="text-white" />
+              <MediFlowLogo size={24} className="text-white" />
             </div>
             <h2 className="text-xl font-bold text-white">Select Store</h2>
             <p className="text-slate-400 text-sm mt-1">

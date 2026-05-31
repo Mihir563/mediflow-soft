@@ -9,6 +9,7 @@ interface OrderItem {
   quantity: number;
   status: 'pending' | 'ordered' | 'arrived';
   ordered_at: string | null;
+  vendor_id?: number | null;
   last_vendor_id: number | null;
   last_vendor_name: string | null;
   last_vendor_phone: string | null;
@@ -22,6 +23,7 @@ interface ItemOption {
 
 export default function OrderBook() {
   const [orders, setOrders] = useState<OrderItem[]>([]);
+  const [vendors, setVendors] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState<ItemOption[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -38,50 +40,134 @@ export default function OrderBook() {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    loadVendors();
     loadOrders();
   }, []);
+
+  const loadVendors = async () => {
+    try {
+      const db = await getDB();
+      const res = await db.select<any[]>(
+        `SELECT id, name FROM parties WHERE type = 'vendor' ORDER BY name ASC`
+      );
+      setVendors(res);
+    } catch (e) {
+      console.error('Failed to load vendors:', e);
+    }
+  };
+
+  // Update vendor on an order_book row — also saves back to items.default_vendor_id so it's remembered
+  const updateVendor = async (orderId: number, itemId: number, vendorId: number | null) => {
+    try {
+      const db = await getDB();
+      let vendorName: string | null = null;
+      let vendorPhone: string | null = null;
+      if (vendorId) {
+        const vRes = await db.select<any[]>(`SELECT name, phone FROM parties WHERE id = $1`, [vendorId]);
+        if (vRes.length > 0) {
+          vendorName = vRes[0].name;
+          vendorPhone = vRes[0].phone || null;
+        }
+        // Save as default vendor on the item so future order book entries auto-resolve
+        await db.execute(`UPDATE items SET default_vendor_id = $1 WHERE id = $2`, [vendorId, itemId]);
+      } else {
+        // Clearing vendor — also clear from item
+        await db.execute(`UPDATE items SET default_vendor_id = NULL WHERE id = $2`, [itemId]);
+      }
+      // Store denormalized vendor info on order_book row for fast sync
+      await db.execute(
+        `UPDATE order_book SET vendor_id = $1, vendor_name = $2, vendor_phone = $3 WHERE id = $4`,
+        [vendorId, vendorName, vendorPhone, orderId]
+      );
+      // Optimistically update UI without full reload
+      setOrders(prev => prev.map(o => o.id === orderId ? {
+        ...o,
+        vendor_id: vendorId,
+        last_vendor_id: vendorId,
+        last_vendor_name: vendorName || 'Unknown Vendor',
+        last_vendor_phone: vendorPhone,
+      } : o));
+    } catch (e) {
+      console.error('Failed to update vendor:', e);
+    }
+  };
 
   const loadOrders = async () => {
     setLoading(true);
     try {
       const db = await getDB();
-      const bookItems = await db.select<any[]>(
-        `SELECT * FROM order_book ORDER BY id DESC`
-      );
+      // Join order_book with items to get default_vendor_id and purchase_price in one query
+      const bookItems = await db.select<any[]>(`
+        SELECT ob.*, 
+               COALESCE(ob.vendor_id, i.default_vendor_id) as resolved_vendor_id,
+               ob.vendor_name as stored_vendor_name,
+               ob.vendor_phone as stored_vendor_phone,
+               i.purchase_price as item_purchase_price
+        FROM order_book ob
+        LEFT JOIN items i ON i.id = ob.item_id
+        ORDER BY ob.id DESC
+      `);
 
       const enrichedOrders: OrderItem[] = [];
 
       for (const item of bookItems) {
-        const lastPurchaseQuery = `
-          SELECT t.party_id, p.name as party_name, p.phone as party_phone, ti.price 
-          FROM transaction_items ti
-          JOIN transactions t ON t.id = ti.txn_id
-          LEFT JOIN parties p ON p.id = t.party_id
-          WHERE ti.item_id = $1 AND t.type = 'purchase'
-          ORDER BY t.date DESC, t.id DESC
-          LIMIT 1
-        `;
-        const lastPurchases = await db.select<{party_id: number, party_name: string, party_phone: string, price: number}[]>(lastPurchaseQuery, [item.item_id]);
+        let vendorId = item.resolved_vendor_id || null;
+        // Use stored vendor info as primary source (fast, no extra query needed)
+        let vendorName = item.stored_vendor_name || null;
+        let vendorPhone = item.stored_vendor_phone || null;
+        let vendorPrice = item.item_purchase_price || null;
 
-        let vendorId = null;
-        let vendorName = 'Unknown Vendor';
-        let vendorPhone = null;
-        let vendorPrice = null;
+        // If we have a vendor_id but no stored name (or it got out of sync), fetch from parties
+        if (vendorId && !vendorName) {
+          const vendorRes = await db.select<any[]>(
+            `SELECT name, phone FROM parties WHERE id = $1`, [vendorId]
+          );
+          if (vendorRes.length > 0) {
+            vendorName = vendorRes[0].name;
+            vendorPhone = vendorRes[0].phone || null;
+            // Back-fill the order_book row with the fetched name for future loads
+            await db.execute(
+              `UPDATE order_book SET vendor_name = $1, vendor_phone = $2 WHERE id = $3`,
+              [vendorName, vendorPhone, item.id]
+            );
+          }
+        }
 
-        if (lastPurchases.length > 0) {
-          vendorId = lastPurchases[0].party_id;
-          vendorName = lastPurchases[0].party_name || 'Cash Vendor';
-          vendorPhone = lastPurchases[0].party_phone || null;
-          vendorPrice = lastPurchases[0].price;
+        // Last fallback: check transaction history — check purchase type first, then any sale linked to a vendor
+        if (!vendorId) {
+          const lastPurchases = await db.select<{party_id: number, party_name: string, party_phone: string, price: number}[]>(`
+            SELECT t.party_id, p.name as party_name, p.phone as party_phone, ti.price 
+            FROM transaction_items ti
+            JOIN transactions t ON t.id = ti.txn_id
+            JOIN parties p ON p.id = t.party_id
+            WHERE ti.item_id = $1
+              AND p.type = 'vendor'
+            ORDER BY t.date DESC, t.id DESC
+            LIMIT 1
+          `, [item.item_id]);
+
+          if (lastPurchases.length > 0 && lastPurchases[0].party_id) {
+            vendorId = lastPurchases[0].party_id;
+            vendorName = lastPurchases[0].party_name || 'Cash Vendor';
+            vendorPhone = lastPurchases[0].party_phone || null;
+            vendorPrice = lastPurchases[0].price || vendorPrice;
+            // Auto-save this discovery back to order_book and items.default_vendor_id so it's instant next time
+            await db.execute(
+              `UPDATE order_book SET vendor_id = $1, vendor_name = $2, vendor_phone = $3 WHERE id = $4`,
+              [vendorId, vendorName, vendorPhone, item.id]
+            );
+            await db.execute(`UPDATE items SET default_vendor_id = $1 WHERE id = $2`, [vendorId, item.item_id]);
+          }
         }
 
         enrichedOrders.push({
           ...item,
           status: item.status || 'pending',
+          vendor_id: vendorId,
           last_vendor_id: vendorId,
-          last_vendor_name: vendorName,
+          last_vendor_name: vendorName || 'Unknown Vendor',
           last_vendor_phone: vendorPhone,
-          last_purchase_price: vendorPrice
+          last_purchase_price: vendorPrice,
         });
       }
 
@@ -148,13 +234,53 @@ export default function OrderBook() {
       const db = await getDB();
       for (const item of stagedItems) {
          if (item.quantity <= 0) continue;
+         
+         // Auto-resolve vendor: first try items.default_vendor_id, then last transaction with a vendor party
+         const itemInfo = await db.select<any[]>(
+           `SELECT default_vendor_id, purchase_price FROM items WHERE id = $1`, [item.id]
+         );
+         let defaultVendorId = itemInfo[0]?.default_vendor_id || null;
+         let vendorName: string | null = null;
+         let vendorPhone: string | null = null;
+
+         if (defaultVendorId) {
+           const vRes = await db.select<any[]>(`SELECT name, phone FROM parties WHERE id = $1`, [defaultVendorId]);
+           if (vRes.length > 0) { vendorName = vRes[0].name; vendorPhone = vRes[0].phone || null; }
+         }
+
+         // If still no vendor, look at transaction history linked to a vendor party
+         if (!defaultVendorId) {
+           const lastVendorTxn = await db.select<any[]>(`
+             SELECT t.party_id, p.name as party_name, p.phone as party_phone
+             FROM transaction_items ti
+             JOIN transactions t ON t.id = ti.txn_id
+             JOIN parties p ON p.id = t.party_id
+             WHERE ti.item_id = $1 AND p.type = 'vendor'
+             ORDER BY t.date DESC, t.id DESC
+             LIMIT 1
+           `, [item.id]);
+           if (lastVendorTxn.length > 0) {
+             defaultVendorId = lastVendorTxn[0].party_id;
+             vendorName = lastVendorTxn[0].party_name;
+             vendorPhone = lastVendorTxn[0].party_phone || null;
+             // Save to item so next time it's instant
+             await db.execute(`UPDATE items SET default_vendor_id = $1 WHERE id = $2`, [defaultVendorId, item.id]);
+           }
+         }
+
          const existing = await db.select<{id: number}[]>(`SELECT id FROM order_book WHERE item_id = $1 AND status = 'pending' LIMIT 1`, [item.id]);
          if (existing.length > 0) {
-           await db.execute(`UPDATE order_book SET quantity = quantity + $1 WHERE id = $2`, [item.quantity, existing[0].id]);
+           // Update quantity and refresh vendor info if now known
+           await db.execute(
+             `UPDATE order_book SET quantity = quantity + $1${vendorName ? ', vendor_id = $3, vendor_name = $4, vendor_phone = $5' : ''} WHERE id = $2`,
+             vendorName 
+               ? [item.quantity, existing[0].id, defaultVendorId, vendorName, vendorPhone]
+               : [item.quantity, existing[0].id]
+           );
          } else {
            await db.execute(
-             `INSERT INTO order_book (item_id, item_name, quantity, status) VALUES ($1, $2, $3, 'pending')`,
-             [item.id, item.name, item.quantity]
+             `INSERT INTO order_book (item_id, item_name, quantity, status, vendor_id, vendor_name, vendor_phone) VALUES ($1, $2, $3, 'pending', $4, $5, $6)`,
+             [item.id, item.name, item.quantity, defaultVendorId, vendorName, vendorPhone]
            );
          }
       }
@@ -543,7 +669,8 @@ export default function OrderBook() {
                           <table className="w-full text-sm mt-2">
                             <thead className="bg-white border-b border-slate-100 text-slate-400 text-xs">
                                 <tr>
-                                <th className="px-5 py-4 text-left font-semibold w-2/3">Item Description</th>
+                                <th className="px-5 py-4 text-left font-semibold w-1/3">Item Description</th>
+                                <th className="px-5 py-4 text-left font-semibold w-1/3">Supplier</th>
                                 <th className="px-5 py-4 text-right font-semibold">Last Rate</th>
                                 <th className="px-5 py-4 text-right font-semibold w-32">Req. Qty</th>
                                 <th className="px-5 py-4 w-16"></th>
@@ -554,6 +681,18 @@ export default function OrderBook() {
                                 <tr key={item.id} className={`hover:bg-slate-50 transition-colors ${idx !== activeVendorPending.length - 1 ? 'border-b border-slate-50' : ''}`}>
                                     <td className="px-5 py-3">
                                     <span className="font-bold text-slate-700">{item.item_name}</span>
+                                    </td>
+                                    <td className="px-5 py-3 text-left">
+                                      <select
+                                        value={item.vendor_id || ''}
+                                        onChange={(e) => updateVendor(item.id, item.item_id, e.target.value ? Number(e.target.value) : null)}
+                                        className="w-full max-w-[200px] h-9 border border-slate-200 rounded-md px-2 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand bg-white font-medium text-slate-700 shadow-sm text-xs cursor-pointer"
+                                      >
+                                        <option value="">— Select Vendor —</option>
+                                        {vendors.map(v => (
+                                          <option key={v.id} value={v.id}>{v.name}</option>
+                                        ))}
+                                      </select>
                                     </td>
                                     <td className="px-5 py-3 text-right font-mono text-slate-500">
                                     {item.last_purchase_price ? `₹${item.last_purchase_price.toFixed(2)}` : '--'}

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase, Store } from '@/lib/supabase';
 import { useAuth } from '@/lib/AuthContext';
+import { MediFlowLogo } from './MediFlowLogo';
 import {
   Activity, Building2, Users, Plus, Search, MoreVertical,
   CheckCircle, XCircle, X, Loader2, Shield,
@@ -464,6 +465,225 @@ Instructions:
   );
 }
 
+// ─── Store History & Credit Audit Drawer ──────────────────────────────────────
+
+interface StoreHistoryModalProps {
+  storeId: string;
+  storeName: string;
+  onClose: () => void;
+}
+
+function StoreHistoryModal({ storeId, storeName, onClose }: StoreHistoryModalProps) {
+  const [txns, setTxns] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'sale' | 'purchase'>('all');
+
+  const fetchHistory = useCallback(async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('id, invoice_no, date, created_at, total_amount, paid_amount, balance_due, type, payment_type, status')
+      .eq('store_id', storeId)
+      .order('created_at', { ascending: false });
+
+    if (!error && data) {
+      setTxns(data);
+    }
+    setLoading(false);
+  }, [storeId]);
+
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
+
+  const filtered = txns.filter(t => {
+    const matchesSearch = !search || String(t.invoice_no || '').toLowerCase().includes(search.toLowerCase()) || String(t.status || '').toLowerCase().includes(search.toLowerCase());
+    const matchesType = typeFilter === 'all' || t.type === typeFilter;
+    return matchesSearch && matchesType;
+  });
+
+  const totalSales = txns.filter(t => t.type === 'sale').reduce((sum, t) => sum + (Number(t.total_amount) || 0), 0);
+  const totalPurchases = txns.filter(t => t.type === 'purchase').reduce((sum, t) => sum + (Number(t.total_amount) || 0), 0);
+  const storeCredit = txns.filter(t => t.type === 'sale').reduce((sum, t) => sum + (Number(t.balance_due) || 0), 0);
+  const outstandingPayables = txns.filter(t => t.type === 'purchase').reduce((sum, t) => sum + (Number(t.balance_due) || 0), 0);
+
+  const statusColor = (status: string) => {
+    if (status === 'paid') return 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+    if (status === 'partial') return 'bg-amber-500/10 text-amber-400 border border-amber-500/20';
+    return 'bg-red-500/10 text-red-400 border border-red-500/20';
+  };
+
+  const fmtDate = (d: string) => {
+    if (!d) return '—';
+    try {
+      return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    } catch {
+      return d;
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-end bg-black/80 backdrop-blur-sm animate-fade-in" onClick={onClose}>
+      <div
+        className="w-full max-w-4xl h-full flex flex-col overflow-hidden border-l border-white/10 slide-in-drawer"
+        style={{
+          background: 'rgba(9, 13, 25, 0.98)',
+          boxShadow: '-10px 0 40px rgba(0, 0, 0, 0.9)',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-6 py-5 border-b border-white/5 flex items-center justify-between bg-white/[0.01]">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 to-fuchsia-600 flex items-center justify-center shadow-lg shadow-violet-500/25">
+              <MediFlowLogo size={20} className="text-white" />
+            </div>
+            <div>
+              <h3 className="text-white font-extrabold text-lg leading-none">{storeName} Ledger</h3>
+              <span className="text-[10px] text-violet-400 uppercase tracking-widest font-semibold">Store History & Credit Audit</span>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors p-1.5 rounded-xl hover:bg-white/5">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin">
+          {loading ? (
+            <div className="h-96 flex flex-col items-center justify-center">
+              <Loader2 size={32} className="animate-spin text-violet-500 mb-3" />
+              <p className="text-slate-400 text-sm font-semibold">Retrieving transaction ledger...</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div className="rounded-xl p-4 bg-white/5 border border-white/5 relative overflow-hidden group">
+                  <div className="absolute -top-6 -right-6 w-16 h-16 rounded-full bg-blue-500/5 blur-xl group-hover:scale-150 transition-transform" />
+                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Total Sales</p>
+                  <p className="text-white text-xl font-black mt-1 font-mono">₹{totalSales.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                </div>
+                
+                <div className="rounded-xl p-4 bg-white/5 border border-white/5 relative overflow-hidden group">
+                  <div className="absolute -top-6 -right-6 w-16 h-16 rounded-full bg-orange-500/5 blur-xl group-hover:scale-150 transition-transform" />
+                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Total Purchases</p>
+                  <p className="text-white text-xl font-black mt-1 font-mono">₹{totalPurchases.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                </div>
+
+                <div className="rounded-xl p-4 bg-red-500/5 border border-red-500/10 relative overflow-hidden group">
+                  <div className="absolute -top-6 -right-6 w-16 h-16 rounded-full bg-red-500/10 blur-xl group-hover:scale-150 transition-transform" />
+                  <p className="text-red-400 text-[10px] font-bold uppercase tracking-wider">Store Credit (Due)</p>
+                  <p className="text-red-300 text-xl font-black mt-1 font-mono">₹{storeCredit.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                </div>
+
+                <div className="rounded-xl p-4 bg-amber-500/5 border border-amber-500/10 relative overflow-hidden group">
+                  <div className="absolute -top-6 -right-6 w-16 h-16 rounded-full bg-amber-500/10 blur-xl group-hover:scale-150 transition-transform" />
+                  <p className="text-amber-400 text-[10px] font-bold uppercase tracking-wider">Outstanding Payables</p>
+                  <p className="text-amber-300 text-xl font-black mt-1 font-mono">₹{outstandingPayables.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 p-4 rounded-xl bg-slate-900/40 border border-white/5">
+                <div className="relative flex-1">
+                  <Search size={14} className="text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    placeholder="Search by invoice no. or status..."
+                    className="w-full h-9 pl-9 pr-4 rounded-lg text-xs text-white placeholder-slate-600 bg-white/5 border border-white/10 outline-none focus:border-violet-500/50 transition-all"
+                  />
+                </div>
+
+                <div className="flex p-0.5 rounded-lg bg-slate-950 border border-white/5 gap-1 shrink-0">
+                  {([
+                    { key: 'all', label: 'All Invoices' },
+                    { key: 'sale', label: 'Sales' },
+                    { key: 'purchase', label: 'Purchases' }
+                  ] as const).map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setTypeFilter(tab.key)}
+                      className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all select-none ${
+                        typeFilter === tab.key 
+                          ? 'bg-violet-600 text-white shadow-md' 
+                          : 'text-slate-400 hover:text-white hover:bg-white/5'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/5 overflow-hidden bg-slate-900/10">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-white/[0.02] border-b border-white/5 text-[9px] font-bold text-slate-500 uppercase tracking-widest">
+                      <th className="px-4 py-3">Invoice No.</th>
+                      <th className="px-4 py-3">Type</th>
+                      <th className="px-4 py-3">Bill Date</th>
+                      <th className="px-4 py-3 text-right">Total</th>
+                      <th className="px-4 py-3 text-right">Paid</th>
+                      <th className="px-4 py-3 text-right">Credit / Bal</th>
+                      <th className="px-4 py-3 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((t, idx) => (
+                      <tr
+                        key={t.id}
+                        className="border-b border-white/5 hover:bg-white/[0.02] transition-colors duration-150 text-xs"
+                        style={{ background: idx % 2 === 0 ? 'rgba(255,255,255,0.003)' : 'transparent' }}
+                      >
+                        <td className="px-4 py-3 font-mono font-bold text-slate-300">
+                          {t.invoice_no || `#${String(t.id).slice(0, 8)}`}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-md ${
+                            t.type === 'sale' 
+                              ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' 
+                              : 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
+                          }`}>
+                            {t.type}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-400 font-mono">
+                          {fmtDate(t.date || t.created_at)}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono font-bold text-white">
+                          ₹{Number(t.total_amount || 0).toFixed(2)}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-emerald-400">
+                          ₹{Number(t.paid_amount || 0).toFixed(2)}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-red-400 font-semibold">
+                          ₹{Number(t.balance_due || 0).toFixed(2)}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`text-[8px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusColor(t.status)}`}>
+                            {t.status || 'paid'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {filtered.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="px-6 py-12 text-center text-slate-500">
+                          No transactions found for this store.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Admin Dashboard Component (State-Of-The-Art Redesign) ─────────────
 
 export default function AdminDashboard() {
@@ -475,6 +695,11 @@ export default function AdminDashboard() {
   const [planFilter, setPlanFilter] = useState<'all' | 'basic' | 'pro' | 'enterprise'>('all');
   const [showCreate, setShowCreate] = useState(false);
   const [actionMenuId, setActionMenuId] = useState<string | null>(null);
+  const [selectedLedgerStore, setSelectedLedgerStore] = useState<{ id: string; name: string } | null>(null);
+  const [deleteStoreTarget, setDeleteStoreTarget] = useState<StoreWithStats | null>(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   const fetchStores = useCallback(async () => {
     setLoading(true);
@@ -501,6 +726,20 @@ export default function AdminDashboard() {
 
   useEffect(() => { fetchStores(); }, [fetchStores]);
 
+  useEffect(() => {
+    if (!actionMenuId) return;
+    const handleOutsideClick = () => {
+      setActionMenuId(null);
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener('click', handleOutsideClick);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('click', handleOutsideClick);
+    };
+  }, [actionMenuId]);
+
   const toggleStoreStatus = async (store: StoreWithStats) => {
     const nextStatus = !store.is_active;
     await supabase
@@ -512,6 +751,39 @@ export default function AdminDashboard() {
       prev.map(s => s.id === store.id ? { ...s, is_active: nextStatus } : s)
     );
     setActionMenuId(null);
+  };
+
+  const handleConfirmDelete = (store: StoreWithStats) => {
+    setDeleteStoreTarget(store);
+    setDeleteConfirmName('');
+    setDeleteError(null);
+    setDeleteLoading(false);
+    setActionMenuId(null);
+  };
+
+  const executeDeleteStore = async () => {
+    if (!deleteStoreTarget) return;
+    if (deleteConfirmName !== deleteStoreTarget.name) {
+      setDeleteError("Store name does not match. Please verify spelling.");
+      return;
+    }
+
+    setDeleteLoading(true);
+    setDeleteError(null);
+
+    const { error } = await supabase
+      .from('stores')
+      .delete()
+      .eq('id', deleteStoreTarget.id);
+
+    setDeleteLoading(false);
+
+    if (error) {
+      setDeleteError("Database error deleting store: " + error.message);
+    } else {
+      setStores(prev => prev.filter(s => s.id !== deleteStoreTarget.id));
+      setDeleteStoreTarget(null);
+    }
   };
 
   const filtered = stores.filter(s => {
@@ -548,7 +820,7 @@ export default function AdminDashboard() {
           <div
             className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25"
           >
-            <Activity size={18} className="text-white" />
+            <MediFlowLogo size={20} className="text-white" />
           </div>
           <div>
             <h1 className="text-white font-extrabold text-base tracking-tight leading-none">MediFlow</h1>
@@ -663,7 +935,7 @@ export default function AdminDashboard() {
           ) : (
             <>
               {/* DESKTOP TABLE VIEW (Visible on larger viewports) */}
-              <div className="hidden md:block rounded-2xl border border-white/5 overflow-hidden bg-slate-900/10">
+              <div className="hidden md:block rounded-2xl border border-white/5 overflow-visible bg-slate-900/10">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-white/[0.02] border-b border-white/5 text-[10px] font-bold text-slate-500 uppercase tracking-widest">
@@ -680,8 +952,9 @@ export default function AdminDashboard() {
                     {filtered.map((store, idx) => (
                       <tr
                         key={store.id}
-                        className="border-b border-white/5 hover:bg-white/[0.02] transition-colors duration-200"
+                        className="border-b border-white/5 hover:bg-white/[0.02] transition-colors duration-200 cursor-pointer"
                         style={{ background: idx % 2 === 0 ? 'rgba(255,255,255,0.005)' : 'transparent' }}
+                        onClick={() => setSelectedLedgerStore({ id: store.id, name: store.name })}
                       >
                         <td className="px-6 py-4.5">
                           <div className="flex items-center gap-3">
@@ -718,7 +991,7 @@ export default function AdminDashboard() {
                             </span>
                           )}
                         </td>
-                        <td className="px-6 py-4.5 relative">
+                        <td className={`px-6 py-4.5 relative ${actionMenuId === store.id ? 'z-20' : ''}`} onClick={e => e.stopPropagation()}>
                           <button
                             onClick={() => setActionMenuId(actionMenuId === store.id ? null : store.id)}
                             className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/5 transition-all"
@@ -727,12 +1000,19 @@ export default function AdminDashboard() {
                           </button>
                           {actionMenuId === store.id && (
                             <div
-                              className="absolute right-6 top-12 z-20 rounded-2xl overflow-hidden py-1.5 min-w-[180px] scale-in border border-white/10"
+                              className="absolute right-8 top-1/2 -translate-y-1/2 z-20 rounded-2xl overflow-hidden py-1.5 min-w-[180px] scale-in border border-white/10"
                               style={{
                                 background: 'rgba(10, 12, 25, 0.98)',
                                 boxShadow: '0 20px 40px rgba(0, 0, 0, 0.8)',
                               }}
                             >
+                              <button
+                                className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left text-xs font-semibold text-slate-300 hover:bg-white/5 hover:text-white transition-colors border-b border-white/5"
+                                onClick={() => { setSelectedLedgerStore({ id: store.id, name: store.name }); setActionMenuId(null); }}
+                              >
+                                <Activity size={14} className="text-violet-400" />
+                                <span>View Store Ledger</span>
+                              </button>
                               <button
                                 className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left text-xs font-semibold text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
                                 onClick={() => toggleStoreStatus(store)}
@@ -749,6 +1029,13 @@ export default function AdminDashboard() {
                                   </>
                                 )}
                               </button>
+                              <button
+                                className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left text-xs font-semibold text-red-400 hover:bg-red-500/10 transition-colors border-t border-white/5"
+                                onClick={() => handleConfirmDelete(store)}
+                              >
+                                <XCircle size={14} className="text-red-400" />
+                                <span>Delete Store Space</span>
+                              </button>
                             </div>
                           )}
                         </td>
@@ -763,8 +1050,9 @@ export default function AdminDashboard() {
                 {filtered.map(store => (
                   <div 
                     key={store.id} 
-                    className="p-5 rounded-2xl border border-white/5 space-y-4"
+                    className="p-5 rounded-2xl border border-white/5 space-y-4 cursor-pointer hover:border-slate-800 transition-all"
                     style={{ background: 'rgba(15, 23, 42, 0.4)' }}
+                    onClick={() => setSelectedLedgerStore({ id: store.id, name: store.name })}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-3">
@@ -805,16 +1093,24 @@ export default function AdminDashboard() {
                         )}
                       </div>
                       
-                      <button
-                        onClick={() => toggleStoreStatus(store)}
-                        className={`px-3.5 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${
-                          store.is_active 
-                            ? 'text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20' 
-                            : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20'
-                        }`}
-                      >
-                        {store.is_active ? 'Suspend' : 'Activate'}
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleStoreStatus(store); }}
+                          className={`px-3.5 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${
+                            store.is_active 
+                              ? 'text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20' 
+                              : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20'
+                          }`}
+                        >
+                          {store.is_active ? 'Suspend' : 'Activate'}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleConfirmDelete(store); }}
+                          className="px-3.5 py-1.5 rounded-lg text-[10px] font-bold text-red-400 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-all"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -838,10 +1134,83 @@ export default function AdminDashboard() {
         />
       )}
 
-      {/* Global dismiss for actions menu */}
-      {actionMenuId && (
-        <div className="fixed inset-0 z-10" onClick={() => setActionMenuId(null)} />
+      {/* Delete Confirmation Modal */}
+      {deleteStoreTarget && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200" onClick={e => e.target === e.currentTarget && setDeleteStoreTarget(null)}>
+          <div 
+            className="w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-red-500/20"
+            style={{
+              background: 'rgba(15, 23, 42, 0.95)',
+              backdropFilter: 'blur(24px)',
+              borderRadius: 24,
+              boxShadow: '0 32px 64px -12px rgba(0,0,0,0.8)',
+            }}
+          >
+            <div className="px-6 pt-8 pb-6 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-5 text-red-400">
+                <AlertCircle size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-white mb-2">Delete Store Space?</h3>
+              <p className="text-slate-400 text-xs leading-relaxed mb-6">
+                ⚠️ <strong>WARNING</strong>: This will permanently purge the store space <strong className="text-white">"{deleteStoreTarget.name}"</strong>, deleting all cashiers, physical item inventory stocks, and customer transaction logs. This action is irreversible.
+              </p>
+
+              <div className="text-left space-y-4 mb-6">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                    Type exact name "{deleteStoreTarget.name}" to confirm
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Enter store name..."
+                    value={deleteConfirmName}
+                    onChange={e => { setDeleteConfirmName(e.target.value); setDeleteError(null); }}
+                    className="w-full h-10 px-4 border border-white/10 rounded-xl text-xs bg-white/[0.03] text-white placeholder-slate-600 focus:outline-none focus:border-red-500/40 focus:ring-1 focus:ring-red-500/20 transition-all font-mono"
+                    onKeyDown={e => e.key === 'Enter' && executeDeleteStore()}
+                  />
+                </div>
+
+                {deleteError && (
+                  <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-[11px] font-medium text-red-400">
+                    {deleteError}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setDeleteStoreTarget(null)}
+                  className="flex-1 h-10 border border-white/5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={executeDeleteStore}
+                  disabled={deleteConfirmName !== deleteStoreTarget.name || deleteLoading}
+                  className="flex-1 h-10 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-red-950/20 flex items-center justify-center gap-1.5"
+                >
+                  {deleteLoading ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <span>Purge Space</span>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
+
+      {/* Store Ledger Drawer */}
+      {selectedLedgerStore && (
+        <StoreHistoryModal
+          storeId={selectedLedgerStore.id}
+          storeName={selectedLedgerStore.name}
+          onClose={() => setSelectedLedgerStore(null)}
+        />
+      )}
+
+
     </div>
   );
 }

@@ -31,13 +31,13 @@ export interface GeminiBillData {
 
 type ScanMode = 'gemini' | 'offline';
 
-const GEMINI_PROMPT = `You are an expert at reading pharmaceutical purchase bills/invoices.
+const GEMINI_PROMPT = `You are an expert at reading pharmaceutical purchase bills/invoices for an Indian medical store billing system.
 
-Analyze this bill image and extract ALL items. Return ONLY a valid JSON object (no markdown, no explanation) in this exact format:
+Analyze this bill image and extract ALL items WITHOUT skipping any. Return ONLY a valid JSON object (no markdown, no explanation) in this exact format:
 
 {
-  "vendor": "supplier/vendor company name or empty string",
-  "bill_no": "invoice or bill number or empty string",
+  "vendor": "supplier/distributor/stockist company name or empty string",
+  "bill_no": "invoice or bill number as printed on the bill or empty string",
   "bill_date": "date in DD/MM/YYYY format or empty string",
   "items": [
     {
@@ -48,24 +48,57 @@ Analyze this bill image and extract ALL items. Return ONLY a valid JSON object (
       "batch": "batch number or empty string",
       "expiry": "MM/YY or MM/YYYY format or empty string",
       "disc": 0,
-      "gst": "2.5+2.5",
+      "gst": 12,
       "free": 0,
       "scheme": 0
     }
   ]
 }
 
-Rules:
-- Extract every single line item you see
-- qty must be a number (integer)
-- price is the purchase rate/cost price per unit (number). Look for columns named "S.Rate", "Sale Rate", "Trade Rate", "Net Rate", "Net Price", "Rate", "Price", or "Price Amount". This is the base cost/purchase rate per unit before tax is applied. If both "S.Rate" and "Net Rate" are present, prefer using "S.Rate" as the base price (since our system applies row discounts separately), otherwise extract whichever represents the unit cost price. 
-- mrp is the maximum retail price per unit (number, 0 if not visible)
-- disc is discount percentage (number, 0 if not shown)
-- gst is GST/tax percentage. It can be a number (like 5, 12, 18) or a string representing the CGST+SGST split from the bill (like "2.5+2.5", "6+6", "9+9", "9.0 + 9.0"). Extract it exactly as visible, and our system will automatically parse and sum it. Default to 0 if not shown.
-- free is the free quantity of items received (number, 0 if not shown)
-- scheme is the flat scheme amount discount for this item row (number, 0 if not shown)
-- If any field is not clearly visible, use sensible defaults (0 for numbers, "" for strings)
-- Do NOT wrap in markdown code blocks. Return raw JSON only.`;
+=== CRITICAL RULES (read carefully) ===
+
+QTY (quantity):
+- qty = the number of BOXES or STRIPS or PACKS or TABLETS actually being purchased on this bill line.
+- On pharma bills, look for columns: "Qty", "Packs", "Boxes", "Strips", "Units", "Nos" or related fields.
+- Extract the EXACT number shown in that column. Do NOT multiply or convert.
+- If the bill shows "Qty: 5 BOX", extract qty=5. If "Qty: 10 STRIP", extract qty=10.
+- NEVER use MRP or price or amount values as qty.
+- Default to 1 if quantity column is genuinely not visible.
+
+PRICE (purchase rate / cost price):
+- price = what the BUYER PAYS per unit (per box/strip/tab as per the unit column).
+- Look for columns named: "Rate", "S.Rate", "Sale Rate", "Net Rate", "Trade Rate", "Price", "MRP/Rate", "Purchase Price", "Basic Rate". 
+- This is ALWAYS less than or equal to MRP.
+- If you see both a "Net Rate" (after discount) and a "Gross Rate"/"S.Rate" (before discount), prefer the GROSS rate (before discount). Our system handles the discount separately.
+- IMPORTANT: price and mrp are DIFFERENT values. price is what you pay; mrp is the printed retail price on the pack.
+
+MRP (maximum retail price):
+- mrp = the price PRINTED ON THE MEDICINE PACKET (maximum retail price to the end customer).
+- Look for columns named: "MRP", "Max Retail Price", "PTR" (sometimes used as MRP).
+- MRP is ALWAYS >= price. If calculated mrp < price, they may be swapped — use the HIGHER value as mrp.
+- Use 0 if MRP column is genuinely not visible on this bill.
+
+DISCOUNT:
+- disc = discount percentage given by the supplier on this row (number, 0 if not shown).
+- Look for: "Disc%", "CD%", "Cash Disc", "Trade Disc".
+
+GST / TAX:
+- gst = GST/tax percentage. Can be a number (5, 12, 18) or a combined CGST+SGST string like "6+6", "2.5+2.5", "9+9".
+- Extract exactly as printed. Our system will automatically sum the split values.
+- Default to 0 if not shown.
+
+FREE:
+- free = free quantity of items received at no charge (0 if not shown).
+
+SCHEME:
+- scheme = flat rupee discount for the item row (0 if not shown). NOT the percentage.
+
+GENERAL:
+- Extract EVERY single line item — do NOT skip items even if the bill is very long.
+- If a field is not clearly visible, use 0 for numbers and empty string for text.
+- Do NOT wrap in markdown code blocks. Return raw JSON only.
+- Ensure all JSON is valid and complete. Do not truncate the items array.`;
+
 
 export default function ScannerPanel({ onClose, onAutoFill, onGeminiData }: ScannerPanelProps) {
   const [image, setImage] = useState<string | null>(null);
@@ -273,12 +306,13 @@ export default function ScannerPanel({ onClose, onAutoFill, onGeminiData }: Scan
         temperature: 0.1,
         topK: 1,
         topP: 1,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 8192, // Increased to support extremely large bills without truncation
       }
     };
 
     let lastError = '';
-    const models = ['gemini-2.5-flash', 'gemini-1.5-flash'];
+    // Supported models in order of capability & availability
+    const models = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 
     for (let i = 0; i < keys.length; i++) {
       const currentKey = keys[i];
@@ -299,11 +333,41 @@ export default function ScannerPanel({ onClose, onAutoFill, onGeminiData }: Scan
 
           if (!res.ok) {
             const errBody = await res.text();
-            throw new Error(`Gemini API error ${res.status}: ${errBody.slice(0, 200)}`);
+            let parsedErr;
+            try {
+              parsedErr = JSON.parse(errBody);
+            } catch (err) {}
+            
+            const errMsg = parsedErr?.error?.message || errBody;
+            if (res.status === 404) {
+              throw new Error(`Model ${currentModel} returned 404 (Not Found). It may be deprecated or not supported by your API key.`);
+            }
+            throw new Error(`Gemini API error ${res.status}: ${errMsg.slice(0, 200)}`);
           }
 
           const json = await res.json();
-          const rawText: string = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+          if (json.error) {
+            throw new Error(json.error.message || 'API returned an error.');
+          }
+
+          const candidate = json?.candidates?.[0];
+          if (!candidate) {
+            throw new Error('No valid response candidates returned by Gemini.');
+          }
+
+          // Check for model truncation
+          if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+            if (candidate.finishReason === 'MAX_TOKENS') {
+              throw new Error('AI response was too long and got truncated. Consider splitting the bill or using a clearer image.');
+            } else {
+              throw new Error(`AI generation stopped early due to finish reason: ${candidate.finishReason}`);
+            }
+          }
+
+          const rawText: string = candidate?.content?.parts?.[0]?.text ?? '';
+          if (!rawText.trim()) {
+            throw new Error('Empty response returned from the model.');
+          }
 
           // Strip markdown code fences if present
           const cleaned = rawText
@@ -312,7 +376,14 @@ export default function ScannerPanel({ onClose, onAutoFill, onGeminiData }: Scan
             .replace(/```\s*$/i, '')
             .trim();
 
-          const parsed: GeminiBillData = JSON.parse(cleaned);
+          let parsed: GeminiBillData;
+          try {
+            parsed = JSON.parse(cleaned);
+          } catch (jsonErr: any) {
+            console.error('Failed to parse Gemini JSON:', jsonErr, cleaned);
+            throw new Error(`Failed to parse AI response as JSON: ${jsonErr.message}. The response may have been truncated or poorly formatted.`);
+          }
+
           setGeminiResult(parsed);
           setText(cleaned); // also show in textarea for manual edits
           setGeminiError(''); // Clear status/errors on success!
@@ -330,11 +401,11 @@ export default function ScannerPanel({ onClose, onAutoFill, onGeminiData }: Scan
           lastError = e.message ?? 'Unknown error calling Gemini API';
           
           if (j < models.length - 1) {
-            setGeminiError(`Model ${currentModel} failed. Trying alternative model ${models[j + 1]}...`);
-            await new Promise(r => setTimeout(r, 800));
+            setGeminiError(`Model ${currentModel} failed: ${lastError}. Trying alternative model ${models[j + 1]}...`);
+            await new Promise(r => setTimeout(r, 1200));
           } else if (i < keys.length - 1) {
-            setGeminiError(`API Key ${i + 1} failed all models. Falling back to Key ${i + 2}...`);
-            await new Promise(r => setTimeout(r, 800));
+            setGeminiError(`API Key ${i + 1} failed all models: ${lastError}. Falling back to Key ${i + 2}...`);
+            await new Promise(r => setTimeout(r, 1200));
           }
         }
       }
@@ -366,12 +437,19 @@ export default function ScannerPanel({ onClose, onAutoFill, onGeminiData }: Scan
       const filled = [];
       for (const item of resultToUse.items) {
         const cleanGst = (item.gst !== undefined && item.gst !== null) ? parseRobustNumber(item.gst) : undefined;
-        const cleanPrice = parseRobustNumber(item.price);
-        const cleanMrp = parseRobustNumber(item.mrp);
+        let cleanPrice = parseRobustNumber(item.price);
+        let cleanMrp = parseRobustNumber(item.mrp);
         const cleanQty = parseRobustNumber(item.qty);
         const cleanDisc = parseRobustNumber(item.disc);
         const cleanFree = parseRobustNumber(item.free);
         const cleanScheme = parseRobustNumber(item.scheme);
+
+        // Sanity check: MRP must be >= price. If AI swapped them, fix it automatically.
+        if (cleanPrice && cleanMrp && cleanPrice > cleanMrp && cleanMrp > 0) {
+          console.warn(`[Scanner] Swapped price/MRP for "${item.name}": price=${cleanPrice} > mrp=${cleanMrp}`);
+          [cleanPrice, cleanMrp] = [cleanMrp, cleanPrice];
+        }
+
 
         let dbItem = matchName(item.name);
         if (!dbItem && item.name.trim()) {

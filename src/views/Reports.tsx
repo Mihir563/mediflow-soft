@@ -15,6 +15,7 @@ interface ReportsProps {
 
 export default function Reports({ initialSearch = '', onEditPurchase, onEditSale }: ReportsProps) {
   const [reportType, setReportType] = useState<ReportType>('sale');
+  const [filterType, setFilterType] = useState<'bill_date' | 'added_date'>('bill_date');
   const [from, setFrom] = useState('2019-01-01'); // Defaulting earlier so migrated data is visible
   const [to, setTo] = useState(new Date().toISOString().split('T')[0]);
   const [data, setData] = useState<any[]>([]);
@@ -26,17 +27,18 @@ export default function Reports({ initialSearch = '', onEditPurchase, onEditSale
     if (initialSearch) setSearch(initialSearch);
   }, [initialSearch]);
 
-  useEffect(() => { loadReport(); }, [reportType, from, to]);
+  useEffect(() => { loadReport(); }, [reportType, from, to, filterType]);
 
   const loadReport = async () => {
     setLoading(true);
     try {
       const db = await getDB();
       let res: any[] = [];
+      const dateCol = filterType === 'bill_date' ? 't.date' : 'COALESCE(t.created_at, t.date)';
       if (reportType === 'sale') {
-        res = await db.select<any[]>(`SELECT t.id, t.invoice_no, t.challan_no, t.date, t.total_amount, t.paid_amount, t.balance_due, t.payment_type, t.status, p.name as party_name, p.phone, p.gstin FROM transactions t LEFT JOIN parties p ON t.party_id=p.id WHERE t.type='sale' AND t.date>=$1 AND t.date<=$2 ORDER BY t.date DESC`, [from, to + 'T23:59:59']);
+        res = await db.select<any[]>(`SELECT t.id, t.invoice_no, t.challan_no, t.date, t.created_at, t.total_amount, t.paid_amount, t.balance_due, t.payment_type, t.status, p.name as party_name, p.phone, p.gstin FROM transactions t LEFT JOIN parties p ON t.party_id=p.id WHERE t.type='sale' AND ${dateCol}>=$1 AND ${dateCol}<=$2 ORDER BY ${dateCol} DESC`, [from, to + 'T23:59:59']);
       } else if (reportType === 'purchase') {
-        res = await db.select<any[]>(`SELECT t.id, t.invoice_no, t.challan_no, t.date, t.total_amount, t.paid_amount, t.balance_due, t.payment_type, t.status, p.name as party_name, p.phone, p.gstin FROM transactions t LEFT JOIN parties p ON t.party_id=p.id WHERE t.type='purchase' AND t.date>=$1 AND t.date<=$2 ORDER BY t.date DESC`, [from, to + 'T23:59:59']);
+        res = await db.select<any[]>(`SELECT t.id, t.invoice_no, t.challan_no, t.date, t.created_at, t.total_amount, t.paid_amount, t.balance_due, t.payment_type, t.status, p.name as party_name, p.phone, p.gstin FROM transactions t LEFT JOIN parties p ON t.party_id=p.id WHERE t.type='purchase' AND ${dateCol}>=$1 AND ${dateCol}<=$2 ORDER BY ${dateCol} DESC`, [from, to + 'T23:59:59']);
       } else if (reportType === 'stock') {
         res = await db.select<any[]>(`SELECT id, name, hsn as item_code, category, unit, hsn, purchase_price, sale_price, opening_stock, current_stock, COALESCE((SELECT SUM(quantity) FROM transaction_items ti JOIN transactions t ON t.id=ti.txn_id WHERE ti.item_id=items.id AND t.type='sale'), 0) as sold_qty FROM items ORDER BY sold_qty DESC, name`);
       } else if (reportType === 'ledger') {
@@ -95,6 +97,16 @@ export default function Reports({ initialSearch = '', onEditPurchase, onEditSale
         </div>
         {reportType !== 'stock' && (
           <div className="flex items-center gap-3">
+            <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden shadow-sm h-8 bg-slate-50">
+              <select
+                value={filterType}
+                onChange={e => setFilterType(e.target.value as any)}
+                className="h-full pl-2 pr-1 text-xs border-0 bg-transparent text-slate-600 font-semibold focus:outline-none"
+              >
+                <option value="bill_date">Bill Date</option>
+                <option value="added_date">Added Date</option>
+              </select>
+            </div>
             <div className="flex items-center gap-2">
               <label className="text-xs text-slate-500">From</label>
               <div className="w-36">
@@ -205,7 +217,14 @@ export default function Reports({ initialSearch = '', onEditPurchase, onEditSale
                 >
                   {(reportType === 'sale' || reportType === 'purchase') && (
                     <>
-                      <td className="pl-6 py-3 text-slate-500 text-sm whitespace-nowrap">{row.date ? new Date(row.date).toLocaleDateString('en-GB') : ''}</td>
+                      <td className="pl-6 py-3 whitespace-nowrap">
+                        <p className="text-slate-700 text-sm font-medium">{row.date ? new Date(row.date).toLocaleDateString('en-GB') : '—'}</p>
+                        {row.created_at && new Date(row.created_at).toLocaleDateString('en-GB') !== (row.date ? new Date(row.date).toLocaleDateString('en-GB') : '') && (
+                          <p className="text-[10px] text-slate-400 font-mono" title="Date Added to System">
+                            Added: {new Date(row.created_at).toLocaleDateString('en-GB')}
+                          </p>
+                        )}
+                      </td>
                       <td className="px-2 py-3 font-mono text-xs text-brand group-hover:underline font-semibold">{row.invoice_no || `#${row.id}`}</td>
                       <td className="px-2 py-3">
                         <p className="font-semibold text-slate-800">{row.party_name || 'Walk-in'}</p>

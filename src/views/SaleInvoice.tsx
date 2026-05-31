@@ -5,7 +5,7 @@ import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle, Edit3 } from '
 import ItemModal from '@/components/ItemModal';
 import ScannerPanel, { GeminiBillData } from '@/components/ScannerPanel';
 import QtyCalculatorModal from '@/components/QtyCalculatorModal';
-import { AppSettings, defaultSettings } from '@/pages/Settings';
+import { AppSettings, defaultSettings } from '@/views/Settings';
 import SmartDateInput from '@/components/SmartDateInput';
 
 interface SaleItemOption {
@@ -51,7 +51,7 @@ interface Party {
   opening_balance: number;
 }
 
-const DEFAULT_ROW_COUNT = 5;
+const DEFAULT_ROW_COUNT = 10;
 const createFallbackInvoiceNo = () => `INV-${Date.now()}`;
 
 const createEmptyRow = (rowId: number): SaleRow => ({
@@ -117,11 +117,22 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
   const itemInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
   const [isEditMode, setIsEditMode] = useState(false);
   const [editTxnDbId, setEditTxnDbId] = useState<number | null>(null);
+  // Ref to always have the latest saveSale without stale closures in event listeners
+  const saveSaleRef = useRef<() => void>(() => {});
 
   async function generateInvoiceNo() {
     try {
       const db = await getDB();
-      const res = await db.select<Array<{ cnt: number }>>(`SELECT COUNT(*) as cnt FROM transactions WHERE type='sale'`);
+      // Count sales only within the current financial year (Apr 1 – Mar 31)
+      const now = new Date();
+      const month = now.getMonth() + 1;
+      const year = now.getFullYear();
+      const fyStart = month >= 4 ? `${year}-04-01` : `${year - 1}-04-01`;
+      const fyEnd = month >= 4 ? `${year + 1}-03-31` : `${year}-03-31`;
+      const res = await db.select<Array<{ cnt: number }>>(
+        `SELECT COUNT(*) as cnt FROM transactions WHERE type='sale' AND date >= $1 AND date <= $2`,
+        [fyStart, fyEnd]
+      );
       const cnt = (res[0]?.cnt || 0) + 1;
       setInvoiceNo(`${cnt}`);
     } catch {
@@ -387,20 +398,37 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
       return;
     }
 
-    const finalPaid = paidAmount === '' ? net : Number(paidAmount);
+    // For credit sales with no paid amount entered, default to 0 (fully on credit)
+    // For cash/UPI with no paid amount entered, default to full net (fully paid)
+    const finalPaid = paidAmount === '' 
+      ? (paymentType === 'credit' ? 0 : net)
+      : Number(paidAmount);
     const balanceDue = net - finalPaid;
     const paymentStatus = balanceDue <= 0 ? 'paid' : finalPaid > 0 ? 'partial' : 'unpaid';
 
     try {
       const db = await getDB();
 
-      // Duplicate invoice number check
+      // Duplicate invoice number check — scoped to the same financial year (Apr 1 – Mar 31)
+      // Indian pharma bills reset their invoice numbers every financial year, so the same
+      // number in different years is perfectly valid and should NOT be blocked.
+      const invDate = new Date(invoiceDate);
+      const invMonth = invDate.getMonth() + 1; // 1-12
+      const invYear = invDate.getFullYear();
+      const fyStart = invMonth >= 4
+        ? `${invYear}-04-01`
+        : `${invYear - 1}-04-01`;
+      const fyEnd = invMonth >= 4
+        ? `${invYear + 1}-03-31`
+        : `${invYear}-03-31`;
+
       const existing = await db.select<any[]>(
-        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'sale'${isEditMode && editTxnDbId ? ` AND id != ${editTxnDbId}` : ''}`,
-        [invoiceNo.trim()]
+        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'sale' AND date >= $2 AND date <= $3${isEditMode && editTxnDbId ? ` AND id != ${editTxnDbId}` : ''}`,
+        [invoiceNo.trim(), fyStart, fyEnd]
       );
       if (existing.length > 0) {
-        setStatus(`❌ Invoice "${invoiceNo.trim()}" already exists! Use a different number.`);
+        const fyLabel = `${new Date(fyStart).getFullYear()}-${String(new Date(fyEnd).getFullYear()).slice(2)}`;
+        setStatus(`❌ Invoice "${invoiceNo.trim()}" already exists in FY ${fyLabel}! Use a different number.`);
         return;
       }
 
@@ -491,6 +519,9 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
     }
   }
 
+  // Keep ref always pointing to latest saveSale to prevent stale closures
+  useEffect(() => { saveSaleRef.current = saveSale; });
+
   useEffect(() => {
     partyInputRef.current?.focus();
   }, []);
@@ -506,11 +537,11 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        saveSale();
+        saveSaleRef.current();
       }
       if (e.key === 'F10') {
         e.preventDefault();
-        saveSale();
+        saveSaleRef.current();
       }
       if (e.key === 'Escape') {
         setShowItemDrop(false);
@@ -524,7 +555,8 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [activeRowId, cart]);
+  // Only re-bind when activeRowId changes (for F4), saveSale is handled via ref
+  }, [activeRowId]);
 
   const HeaderTip = ({ label, tip }: { label: string; tip: React.ReactNode }) => (
     <span className="inline-flex items-center gap-0.5">
@@ -697,23 +729,23 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
           />
         )}
 
-        <div className="flex-1 overflow-x-auto min-h-[250px] border-t border-slate-100">
-          <table className="w-full min-w-[1300px] text-sm table-fixed">
-            <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
-              <tr className="text-slate-500 text-[11px] font-bold uppercase tracking-wider">
-                <th className="pl-4 pr-1 py-2 text-left w-8">#</th>
-                <th className="px-1 py-2 text-left w-[200px]"><HeaderTip label="Item" tip={<><b>Item / Description</b><br/>દવાનું નામ અથવા વર્ણન.<br/><span className="text-slate-300">Search and select the medicine.</span></>} /></th>
-                {settings.show_mrp && <th className="px-1 py-2 text-right w-16"><HeaderTip label="MRP" tip={<><b>Max Retail Price</b><br/>મહત્તમ છૂટક કિંમત.<br/><span className="text-slate-300">Printed price on the package.</span></>} /></th>}
-                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Price" tip={<><b>Sale Price</b><br/>વેચાણ કિંમત.<br/><span className="text-slate-300">Customer price per unit.</span></>} /></th>
-                {settings.show_stock && <th className="px-1 py-2 text-right w-14"><HeaderTip label="Stock" tip={<><b>Current Stock</b><br/>હાલનો સ્ટોક.<br/><span className="text-slate-300">Available physical stock.</span></>} /></th>}
-                <th className="px-1 py-2 text-right w-16"><HeaderTip label="Qty" tip={<><b>Quantity</b><br/>જથ્ધો / નંગ.<br/><span className="text-slate-300">Units being sold.</span></>} /></th>
-                <th className="px-1 py-2 text-right w-14"><HeaderTip label="Free" tip={<><b>Free Quantity</b><br/>મફત જથ્ધો.<br/><span className="text-slate-300">Items given for free.</span></>} /></th>
-                <th className="px-1 py-2 text-left w-20"><HeaderTip label="Unit" tip={<><b>Unit Type</b><br/>એકમ.<br/><span className="text-slate-300">Selling unit (TAB/STRIP/BOX).</span></>} /></th>
-                <th className="px-1 py-2 text-right w-16"><HeaderTip label="Disc%" tip={<><b>Discount Percentage</b><br/>ડિસ્કાઉન્ટ ટકાવારી.<br/><span className="text-slate-300">Discount given to customer.</span></>} /></th>
-                <th className="px-1 py-2 text-right w-16"><HeaderTip label="Scheme ₹" tip={<><b>Scheme Amount</b><br/>સ્કીમ રકમ.<br/><span className="text-slate-300">Flat scheme discount applied.</span></>} /></th>
-                {settings.show_tax && <th className="px-1 py-2 text-right w-16"><HeaderTip label="Tax%" tip={<><b>Tax Percentage</b><br/>ટેક્સ ટકાવારી.<br/><span className="text-slate-300">Tax applied to this item.</span></>} /></th>}
-                <th className="px-1 py-2 text-right w-20"><HeaderTip label="Amount" tip={<><b>Total Amount</b><br/>કુલ રકમ.<br/><span className="font-mono text-[10px] text-green-300 mt-1 block tracking-tight">Qty × Price - Disc - Scheme + Tax</span></>} /></th>
-                <th className="pr-4 pl-1 py-2 w-8"></th>
+        <div className="flex-1 overflow-x-auto border-t border-slate-200">
+          <table className="w-full min-w-[1100px] text-xs table-fixed border-collapse">
+            <thead className="bg-slate-100 border-b-2 border-slate-300 sticky top-0 z-10">
+              <tr className="text-slate-600 text-[10px] font-bold uppercase tracking-widest">
+                <th className="pl-3 pr-1 py-1.5 text-left w-7 border-r border-slate-200">#</th>
+                <th className="px-1 py-1.5 text-left w-[220px] border-r border-slate-200"><HeaderTip label="Item" tip={<><b>Item / Description</b><br/>Search and select the medicine.</>} /></th>
+                {settings.show_mrp && <th className="px-1 py-1.5 text-right w-16 border-r border-slate-200"><HeaderTip label="MRP" tip={<><b>Max Retail Price</b><br/>Printed price on the package.</>} /></th>}
+                <th className="px-1 py-1.5 text-right w-20 border-r border-slate-200"><HeaderTip label="Price" tip={<><b>Sale Price</b><br/>Customer price per unit.</>} /></th>
+                {settings.show_stock && <th className="px-1 py-1.5 text-right w-14 border-r border-slate-200"><HeaderTip label="Stock" tip={<><b>Current Stock</b><br/>Available physical stock.</>} /></th>}
+                <th className="px-1 py-1.5 text-right w-14 border-r border-slate-200"><HeaderTip label="Qty" tip={<><b>Quantity</b><br/>Units being sold.</>} /></th>
+                <th className="px-1 py-1.5 text-right w-12 border-r border-slate-200"><HeaderTip label="Free" tip={<><b>Free Qty</b><br/>Items given for free.</>} /></th>
+                <th className="px-1 py-1.5 text-left w-16 border-r border-slate-200"><HeaderTip label="Unit" tip={<><b>Unit</b><br/>TAB/STRIP/BOX</>} /></th>
+                <th className="px-1 py-1.5 text-right w-12 border-r border-slate-200"><HeaderTip label="Disc%" tip={<><b>Discount%</b><br/>Discount given to customer.</>} /></th>
+                <th className="px-1 py-1.5 text-right w-16 border-r border-slate-200"><HeaderTip label="Scheme ₹" tip={<><b>Scheme Amount</b><br/>Flat scheme discount.</>} /></th>
+                {settings.show_tax && <th className="px-1 py-1.5 text-right w-12 border-r border-slate-200"><HeaderTip label="Tax%" tip={<><b>Tax%</b><br/>Tax applied to this item.</>} /></th>}
+                <th className="px-1 py-1.5 text-right w-20 border-r border-slate-200"><HeaderTip label="Amount" tip={<><b>Total Amount</b><br/><span className="font-mono text-[10px] text-green-300">Qty×Price-Disc-Scheme+Tax</span></>} /></th>
+                <th className="pr-3 pl-1 py-1.5 w-7"></th>
               </tr>
             </thead>
             <tbody>
@@ -729,12 +761,13 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
                 const taxable = Math.max(0, base - discAmt - schemeVal);
                 const taxAmt = taxable * (taxVal / 100);
                 const amount = taxable + taxAmt;
+                const isActive = activeRowId === row.rowId;
 
                 return (
                   <React.Fragment key={row.rowId}>
-                    <tr className="border-b border-slate-100 hover:bg-slate-50/70">
-                    <td className="pl-4 pr-1 py-1 text-slate-400 font-mono text-xs align-top">{idx + 1}</td>
-                    <td className="px-1 py-1 align-top">
+                    <tr className={`border-b border-slate-100 ${isActive ? 'bg-blue-50/60 border-t-2 border-b-2 border-y-brand' : 'hover:bg-slate-50/80'}`}>
+                    <td className={`pl-3 pr-1 py-0.5 text-slate-300 font-mono text-[10px] align-middle border-r border-slate-100 text-center ${isActive ? 'border-l-2 border-l-brand' : ''}`}>{idx + 1}</td>
+                    <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
                       <div className="relative">
                         <input
                           data-row={row.rowId} data-field="name"
@@ -764,7 +797,6 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
                                 setShowItemDrop(false);
                               }
                             } else if (e.key === 'Enter' && !showItemDrop) {
-                                // If they hit enter on a completed row, jump to next row
                                 const nextIdx = cart.findIndex(r => r.rowId === row.rowId) + 1;
                                 if (nextIdx < cart.length) focusRowInput(cart[nextIdx].rowId);
                                 else addEmptyRow();
@@ -773,51 +805,43 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
                             }
                           }}
                           onChange={e => searchItems(row.rowId, e.target.value)}
-                          placeholder="Type item name"
-                          className="w-full h-8 border border-slate-200 rounded-md px-2 text-sm bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                          placeholder="Item name..."
+                          className="w-full h-6 border-0 border-b border-slate-200 px-2 text-xs bg-transparent focus:outline-none focus:border-brand focus:bg-white"
                         />
                         {activeRowId === row.rowId && showItemDrop && row.name.trim() && (
-                          <div className="absolute left-0 top-[calc(100%+6px)] z-40 w-[460px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl ring-1 ring-black/5">
-                            <div className="flex bg-slate-50/80 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-100 backdrop-blur-sm">
+                          <div className="absolute left-0 top-[calc(100%+2px)] z-40 w-[420px] overflow-hidden border border-slate-200 bg-white shadow-2xl">
+                            <div className="flex bg-slate-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200">
                               <span className="flex-1">Item Name</span>
-                              <span className="w-16 text-right">Stock</span>
-                              <span className="w-20 text-right">MRP</span>
-                              <span className="w-16 text-right">Tax</span>
+                              <span className="w-14 text-right">Stock</span>
+                              <span className="w-16 text-right">MRP</span>
+                              <span className="w-12 text-right">Tax</span>
                             </div>
-                            <div className="max-h-[280px] overflow-y-auto p-1.5 scrollbar-thin">
+                            <div className="max-h-[260px] overflow-y-auto">
                               {itemResults.length > 0 ? itemResults.map((item, iIndex) => (
                                 <button
                                   key={item.id}
                                   onMouseDown={e => e.preventDefault()}
-                                  onClick={() => {
-                                      applyItemToRow(row.rowId, item);
-                                  }}
-                                  className={`flex w-full items-center px-3 py-3 text-left rounded-lg group transition-all ${
-                                    selectedItemIndex === iIndex ? 'bg-blue-100 ring-2 ring-brand ring-inset' : 'hover:bg-blue-50/80'
+                                  onClick={() => applyItemToRow(row.rowId, item)}
+                                  className={`flex w-full items-center px-3 py-2 text-left border-b border-slate-50 last:border-0 ${
+                                    selectedItemIndex === iIndex ? 'bg-brand text-white' : 'hover:bg-blue-50'
                                   }`}
                                 >
-                                  <span className="flex-1 truncate font-semibold text-slate-700 group-hover:text-blue-700">{item.name}</span>
-                                  <div className="w-16 text-right">
-                                    <span className={`text-xs font-bold ${(item.current_stock || 0) <= 0 ? 'text-red-500 bg-red-50 px-1.5 py-0.5 rounded' : 'text-slate-600'}`}>
-                                      {item.current_stock || 0}
-                                    </span>
-                                  </div>
-                                  <div className="w-20 text-right">
-                                    <span className="text-sm font-mono font-bold text-slate-800">
-                                      ₹{Number(item.sale_price || 0).toFixed(2)}
-                                    </span>
-                                  </div>
-                                  <div className="w-16 text-right">
-                                    <span className="text-xs text-slate-500">{item.tax_rate || 0}%</span>
-                                  </div>
+                                  <span className="flex-1 truncate text-xs font-medium">{item.name}</span>
+                                  <span className={`w-14 text-right text-xs font-mono ${(item.current_stock || 0) <= 0 ? 'text-red-400' : ''}`}>
+                                    {item.current_stock || 0}
+                                  </span>
+                                  <span className="w-16 text-right text-xs font-mono font-bold">
+                                    ₹{Number(item.sale_price || 0).toFixed(2)}
+                                  </span>
+                                  <span className="w-12 text-right text-xs text-slate-400">{item.tax_rate || 0}%</span>
                                 </button>
                               )) : (
-                                <div className="px-4 py-8 text-center text-sm text-slate-500">
-                                  No items found matching &quot;{row.name}&quot;.
+                                <div className="px-3 py-6 text-center text-xs text-slate-400">
+                                  No items found matching "{row.name}"
                                 </div>
                               )}
                             </div>
-                            <div className="border-t border-slate-100 bg-slate-50 p-2">
+                            <div className="border-t border-slate-100 bg-slate-50 p-1.5">
                               <button
                                 onMouseDown={e => e.preventDefault()}
                                 onClick={() => {
@@ -826,9 +850,9 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
                                   setShowItemDrop(false);
                                   setShowItemModal(true);
                                 }}
-                                className="flex w-full items-center justify-center gap-2 rounded-lg bg-white border border-slate-200 py-2.5 text-xs font-bold text-brand hover:bg-brand hover:text-white hover:border-brand shadow-sm transition-all"
+                                className="flex w-full items-center justify-center gap-1.5 py-1.5 text-xs font-bold text-brand hover:bg-brand hover:text-white transition-all border border-brand/30"
                               >
-                                <Plus size={14} /> Create New Item
+                                <Plus size={12} /> Create New Item
                               </button>
                             </div>
                           </div>
@@ -836,56 +860,45 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
                       </div>
                     </td>
                     {settings.show_mrp && (
-                      <td className="px-1 py-1 align-top text-right font-mono text-slate-600">
-                        <div className="h-8 flex items-center justify-end text-xs">₹{row.sale_price || 0}</div>
+                      <td className="px-1.5 py-0.5 align-middle border-r border-slate-100 text-right font-mono text-slate-400 text-xs">
+                        {row.sale_price ? `₹${row.sale_price}` : ''}
                       </td>
                     )}
-                    <td className="px-1 py-1 align-top">
-                      <input
-                        type="text"
-                        data-row={row.rowId} data-field="price"
+                    <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
+                      <input type="text" data-row={row.rowId} data-field="price"
                         value={row.price}
-                        onChange={e => {
-                          updateRow(row.rowId, 'price', e.target.value);
-                        }}
+                        onChange={e => updateRow(row.rowId, 'price', e.target.value)}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'price')}
-                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        className="w-full h-6 border-0 border-b border-slate-200 px-1.5 text-right font-mono text-xs bg-transparent focus:outline-none focus:border-brand focus:bg-white"
                       />
                     </td>
                     {settings.show_stock && (
-                      <td className="px-1 py-1 align-top text-right text-slate-500">
-                        <div className="h-8 flex items-center justify-end text-xs">{row.current_stock || 0}</div>
+                      <td className="px-1.5 py-0.5 align-middle border-r border-slate-100 text-right text-xs font-mono">
+                        <span className={row.current_stock <= 0 ? 'text-red-400 font-bold' : 'text-slate-400'}>
+                          {row.current_stock || 0}
+                        </span>
                       </td>
                     )}
-                    <td className="px-1 py-1 align-top">
-                      <input
-                        type="text"
-                        data-row={row.rowId} data-field="qty"
+                    <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
+                      <input type="text" data-row={row.rowId} data-field="qty"
                         value={row.qty}
-                        onChange={e => {
-                          updateRow(row.rowId, 'qty', e.target.value);
-                        }}
+                        onChange={e => updateRow(row.rowId, 'qty', e.target.value)}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'qty')}
-                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        className="w-full h-6 border-0 border-b border-slate-200 px-1.5 text-right font-mono text-xs bg-transparent focus:outline-none focus:border-brand focus:bg-white"
                       />
                     </td>
-                    <td className="px-1 py-1 align-top">
-                      <input
-                        type="text"
-                        data-row={row.rowId} data-field="free"
+                    <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
+                      <input type="text" data-row={row.rowId} data-field="free"
                         value={row.free}
-                        onChange={e => {
-                          updateRow(row.rowId, 'free', e.target.value);
-                        }}
+                        onChange={e => updateRow(row.rowId, 'free', e.target.value)}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'free')}
-                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        className="w-full h-6 border-0 border-b border-slate-200 px-1.5 text-right font-mono text-xs bg-transparent focus:outline-none focus:border-brand focus:bg-white"
                       />
                     </td>
-                    <td className="px-1 py-1 align-top">
-                      <select
-                        value={row.unit || 'TAB'}
+                    <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
+                      <select value={row.unit || 'TAB'}
                         onChange={e => handleUnitChange(row.rowId, e.target.value)}
-                        className="w-full h-8 border border-slate-200 rounded-md px-1 bg-slate-50 text-xs font-bold text-slate-600 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        className="w-full h-6 border-0 border-b border-slate-200 px-0.5 bg-transparent text-xs font-bold text-slate-600 focus:outline-none focus:border-brand"
                       >
                         <option value="BOX">BOX</option>
                         <option value="STRIP">STRIP</option>
@@ -894,52 +907,42 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
                         <option value="BTL">BTL</option>
                       </select>
                     </td>
-                    <td className="px-1 py-1 align-top">
-                      <input
-                        type="text"
-                        data-row={row.rowId} data-field="disc"
+                    <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
+                      <input type="text" data-row={row.rowId} data-field="disc"
                         value={row.disc}
-                        onChange={e => {
-                          updateRow(row.rowId, 'disc', e.target.value);
-                        }}
+                        onChange={e => updateRow(row.rowId, 'disc', e.target.value)}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'disc')}
-                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        className="w-full h-6 border-0 border-b border-slate-200 px-1.5 text-right font-mono text-xs bg-transparent focus:outline-none focus:border-brand focus:bg-white"
                       />
                     </td>
-                    <td className="px-1 py-1 align-top">
-                      <input
-                        type="text"
-                        data-row={row.rowId} data-field="scheme_amount"
+                    <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
+                      <input type="text" data-row={row.rowId} data-field="scheme_amount"
                         value={row.scheme_amount || ''}
-                        onChange={e => {
-                          updateRow(row.rowId, 'scheme_amount', e.target.value);
-                        }}
+                        onChange={e => updateRow(row.rowId, 'scheme_amount', e.target.value)}
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'scheme_amount')}
-                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                        className="w-full h-6 border-0 border-b border-slate-200 px-1.5 text-right font-mono text-xs bg-transparent focus:outline-none focus:border-brand focus:bg-white"
                         placeholder="0"
                       />
                     </td>
-                    {settings.show_tax && <td className="px-1 py-1 align-top">
-                      <input
-                        type="text"
-                        data-row={row.rowId} data-field="tax"
-                        value={row.tax_rate}
-                        onChange={e => {
-                          updateRow(row.rowId, 'tax_rate', e.target.value);
-                        }}
-                        onKeyDown={e => handleFieldArrow(e, row.rowId, 'tax')}
-                        className="w-full h-8 border border-slate-200 rounded-md px-2 text-right font-mono text-xs bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand"
-                      />
-                    </td>}
-                    <td className="px-1 py-1 align-top text-right font-medium font-mono text-slate-800">
-                      <div className="h-8 flex items-center justify-end text-xs">{amount.toFixed(2)}</div>
+                    {settings.show_tax && (
+                      <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
+                        <input type="text" data-row={row.rowId} data-field="tax"
+                          value={row.tax_rate}
+                          onChange={e => updateRow(row.rowId, 'tax_rate', e.target.value)}
+                          onKeyDown={e => handleFieldArrow(e, row.rowId, 'tax')}
+                          className="w-full h-6 border-0 border-b border-slate-200 px-1.5 text-right font-mono text-xs bg-transparent focus:outline-none focus:border-brand focus:bg-white"
+                        />
+                      </td>
+                    )}
+                    <td className="px-1.5 py-0.5 align-middle border-r border-slate-100 text-right font-bold font-mono text-slate-800">
+                      {amount > 0 ? amount.toFixed(2) : ''}
                     </td>
-                    <td className="pr-4 pl-1 py-1 align-top text-right">
+                    <td className={`pr-2 pl-0.5 py-0.5 align-middle text-center ${isActive ? 'border-r-2 border-r-brand' : ''}`}>
                       <button
                         onClick={() => clearRow(row.rowId)}
-                        className="mt-1 ml-auto flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-200 hover:text-red-500"
+                        className="h-5 w-5 flex items-center justify-center text-slate-200 hover:text-red-500 hover:bg-red-50 transition-colors"
                       >
-                        <Trash2 size={12} />
+                        <Trash2 size={11} />
                       </button>
                     </td>
                   </tr>
@@ -947,95 +950,85 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
               );
             })}
             </tbody>
-            <tfoot className="bg-slate-50 border-t border-b border-slate-200 sticky bottom-0 z-10">
+            <tfoot className="bg-slate-100 border-t-2 border-slate-300 sticky bottom-0 z-10">
               <tr>
-                <td colSpan={2} className="px-4 py-2">
-                  <div className="flex items-center gap-4">
+                <td colSpan={2} className="px-3 py-1.5">
+                  <div className="flex items-center gap-3">
                     <button
                       onClick={addEmptyRow}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-brand"
+                      className="inline-flex items-center gap-1 border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-600 hover:bg-slate-200 transition-all"
                     >
-                      <Plus size={14} /> Add Row
+                      <Plus size={11} /> Add Row
                     </button>
-                    <span className="font-medium text-slate-600">Total</span>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Totals</span>
                   </div>
                 </td>
-                {settings.show_mrp && <td></td>}
+                {settings.show_mrp && <td className="border-r border-slate-200"></td>}
+                <td className="border-r border-slate-200"></td>
+                {settings.show_stock && <td className="border-r border-slate-200"></td>}
+                <td className="px-1.5 py-1.5 text-right font-bold text-slate-700 font-mono text-xs border-r border-slate-200">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
+                <td className="border-r border-slate-200"></td>
+                <td className="border-r border-slate-200"></td>
+                <td className="border-r border-slate-200"></td>
+                <td className="border-r border-slate-200"></td>
+                {settings.show_tax && <td className="border-r border-slate-200"></td>}
+                <td className="px-1.5 py-1.5 text-right font-bold text-brand font-mono text-sm border-r border-slate-200">₹{net.toFixed(2)}</td>
                 <td></td>
-                {settings.show_stock && <td></td>}
-                <td className="px-1 py-2 text-right font-bold text-slate-700 font-mono text-xs">{validRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)}</td>
-                <td></td>
-                <td></td>
-                <td></td>
-                <td></td>
-                {settings.show_tax && <td></td>}
-                <td className="px-1 py-2 text-right font-bold text-slate-800 font-mono text-xs">{net.toFixed(2)}</td>
-                <td className="pr-4 pl-1"></td>
               </tr>
             </tfoot>
           </table>
         </div>
 
-        <div className="bg-slate-50 border-t border-slate-200 p-6 flex justify-between shrink-0">
-          <div className="flex gap-8 w-1/2">
-            <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <select
-                    value={paymentType}
-                    onChange={e => setPaymentType(e.target.value as 'cash' | 'credit' | 'upi')}
-                    className="appearance-none h-10 pl-4 pr-10 border border-slate-200 rounded-lg bg-white text-sm focus:border-brand focus:ring-1 focus:ring-brand outline-none shadow-sm cursor-pointer"
-                  >
-                    <option value="cash">Cash</option>
-                    <option value="credit">Credit</option>
-                    <option value="upi">UPI</option>
-                  </select>
-                  <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                </div>
-                {paymentType !== 'credit' && (
-                  <div className="flex items-center">
-                    <span className="text-slate-500 mr-2 text-sm">Amount Received</span>
-                    <input
-                      type="number"
-                      placeholder={net.toFixed(2)}
-                      value={paidAmount}
-                      onChange={e => setPaidAmount(e.target.value ? parseFloat(e.target.value) : '')}
-                      className="w-24 h-10 border border-slate-200 rounded-lg text-right px-3 font-mono text-sm bg-white focus:border-brand focus:ring-1 focus:ring-brand outline-none shadow-sm"
-                    />
-                  </div>
-                )}
-              </div>
-              {paymentType !== 'credit' && (net - (paidAmount === '' ? net : Number(paidAmount))) > 0 && (
-                <div className="text-sm font-medium text-orange-600">
-                  Balance Due: ₹{(net - (paidAmount === '' ? net : Number(paidAmount))).toFixed(2)}
-                </div>
-              )}
-              <div className="w-96">
-                <textarea
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                  rows={2}
-                  placeholder="Add Description / Notes"
-                  className="w-full border border-slate-200 rounded-lg text-sm px-3 py-2 bg-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand shadow-sm resize-none"
+        {/* Compact bottom panel */}
+        <div className="bg-white border-t-2 border-slate-200 px-4 py-2 flex items-center justify-between gap-4 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <select
+                value={paymentType}
+                onChange={e => setPaymentType(e.target.value as 'cash' | 'credit' | 'upi')}
+                className="appearance-none h-8 pl-3 pr-8 border border-slate-200 bg-white text-xs font-bold focus:border-brand focus:ring-1 focus:ring-brand outline-none cursor-pointer"
+              >
+                <option value="cash">Cash</option>
+                <option value="credit">Credit</option>
+                <option value="upi">UPI</option>
+              </select>
+              <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            </div>
+            {paymentType !== 'credit' && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 font-medium">Received</span>
+                <input
+                  type="number"
+                  placeholder={net.toFixed(2)}
+                  value={paidAmount}
+                  onChange={e => setPaidAmount(e.target.value ? parseFloat(e.target.value) : '')}
+                  className="w-20 h-8 border border-slate-200 text-right px-2 font-mono text-xs bg-white focus:border-brand focus:ring-1 focus:ring-brand outline-none"
                 />
               </div>
-            </div>
+            )}
+            {paymentType !== 'credit' && (net - (paidAmount === '' ? net : Number(paidAmount))) > 0 && (
+              <span className="text-xs font-bold text-orange-600 bg-orange-50 px-2 py-1 border border-orange-200">
+                Due: ₹{(net - (paidAmount === '' ? net : Number(paidAmount))).toFixed(2)}
+              </span>
+            )}
+            <input
+              type="text"
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Notes..."
+              className="w-52 h-8 border border-slate-200 px-2 text-xs bg-white focus:outline-none focus:border-brand"
+            />
           </div>
 
-          <div className="w-[300px] flex flex-col justify-end gap-6">
-            <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm border-t-4 border-t-brand">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-slate-500 font-medium">Rounding off</span>
-                <span className="font-mono text-slate-400">{(net - (afterDiscount + totalTax)).toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between items-center border-t border-slate-100 pt-2 pb-1">
-                <span className="text-lg font-bold text-slate-800">Total</span>
-                <span className="text-2xl font-bold text-slate-800 font-mono">₹{net.toFixed(2)}</span>
-              </div>
-              {totalTax > 0 && <div className="text-right text-[10px] text-slate-400">Includes Tax: ₹{totalTax.toFixed(2)}</div>}
+          <div className="flex items-center gap-4">
+            {totalTax > 0 && (
+              <span className="text-[10px] text-slate-400 font-mono">Tax: ₹{totalTax.toFixed(2)}</span>
+            )}
+            <div className="text-right">
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Total Sale</div>
+              <div className="text-xl font-bold text-brand font-mono">₹{net.toFixed(2)}</div>
             </div>
-
-            <div className="flex gap-2 justify-end">
+            <div className="flex gap-2">
               <button
                 onClick={() => {
                   setCart(Array.from({ length: DEFAULT_ROW_COUNT }, (_, index) => createEmptyRow(index + 1)));
@@ -1049,17 +1042,17 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
                   setStatus('');
                   generateInvoiceNo();
                 }}
-                className="px-6 h-10 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 font-medium transition-colors shadow-sm bg-white"
+                className="px-4 h-8 border border-slate-200 hover:bg-slate-100 text-slate-600 text-xs font-medium transition-colors bg-white"
               >
                 {isEditMode ? 'Cancel Edit' : 'Clear'}
               </button>
               <button
                 onClick={saveSale}
-                className={`px-8 h-10 rounded-lg text-white font-medium transition-colors shadow-sm flex items-center gap-2 ${
+                className={`px-6 h-8 text-white text-xs font-bold transition-colors flex items-center gap-2 ${
                   isEditMode ? 'bg-amber-500 hover:bg-amber-600' : 'bg-brand hover:bg-brand-hover'
                 }`}
               >
-                {isEditMode ? '✏️ Update Invoice' : 'Save (Ctrl+S)'}
+                {isEditMode ? '✏️ Update' : 'Save (Ctrl+S)'}
               </button>
             </div>
           </div>
