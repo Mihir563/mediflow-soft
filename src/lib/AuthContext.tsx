@@ -48,6 +48,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [activeStore, setActiveStoreState] = useState<Store | null>(null);
   const [activeRole, setActiveRole]        = useState<StoreUser['role'] | null>(null);
 
+  const STORE_PERSIST_KEY = 'mediflow-active-store';
+
   // ── Online detection ──────────────────────────────────────────────────────
   useEffect(() => {
     const update = () => setIsOnline(navigator.onLine);
@@ -124,8 +126,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const storeData = data[0].stores as unknown as Store;
       setActiveStoreState(storeData);
       setActiveRole(storeList[0].role);
+      // Persist to localStorage for next app launch
+      try { localStorage.setItem(STORE_PERSIST_KEY, JSON.stringify({ store: storeData, role: storeList[0].role })); } catch {}
       // Init cloud DB for this store
       initCloudDB(storeData.id);
+    } else if (storeList.length > 1) {
+      // Multi-store: try to restore previously selected store from localStorage
+      try {
+        const raw = localStorage.getItem(STORE_PERSIST_KEY);
+        if (raw) {
+          const { store, role } = JSON.parse(raw) as { store: Store; role: StoreUser['role'] };
+          // Verify the stored store is still in the user's store list
+          const stillMember = storeList.find(s => s.store_id === store.id);
+          if (stillMember && store.is_active) {
+            setActiveStoreState(store);
+            setActiveRole(role);
+            initCloudDB(store.id);
+          }
+        }
+      } catch {}
     }
   }, []);
 
@@ -172,11 +191,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setActiveStoreState(null);
     setActiveRole(null);
     clearCloudDB();
-  }, []);
+    // Clear persisted store so a fresh login works correctly
+    try { localStorage.removeItem(STORE_PERSIST_KEY); } catch {}
+  }, [STORE_PERSIST_KEY]);
 
   const setActiveStore = useCallback((store: Store, role: StoreUser['role']) => {
     setActiveStoreState(store);
     setActiveRole(role);
+    // Persist selection so it's restored on next app launch
+    try { localStorage.setItem(STORE_PERSIST_KEY, JSON.stringify({ store, role })); } catch {}
     initCloudDB(store.id);
   }, []);
 

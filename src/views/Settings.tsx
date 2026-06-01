@@ -24,6 +24,37 @@ export const defaultSettings = {
 
 export type AppSettings = typeof defaultSettings;
 
+// Financial year settings stored separately in app_settings as plain strings
+export const FY_SETTING_KEY = 'fy_start_month';
+export const FY_DEFAULT_MONTH = 4; // April
+
+export async function getFyStartMonth(): Promise<number> {
+  try {
+    const { getDB } = await import('@/lib/db');
+    const db = await getDB();
+    const res = await db.select<{key: string; value: string}[]>(`SELECT value FROM app_settings WHERE key = '${FY_SETTING_KEY}'`);
+    if (res.length > 0) {
+      const m = parseInt(res[0].value, 10);
+      if (!isNaN(m) && m >= 1 && m <= 12) return m;
+    }
+  } catch {}
+  return FY_DEFAULT_MONTH;
+}
+
+export function getFyBounds(referenceDate: string, fyStartMonth: number): { fyStart: string; fyEnd: string } {
+  const d = new Date(referenceDate);
+  const month = d.getMonth() + 1; // 1-12
+  const year = d.getFullYear();
+  const fyStartYear = month >= fyStartMonth ? year : year - 1;
+  const fyEndYear = fyStartYear + 1;
+  // fyEnd month is fyStartMonth - 1, wrap December
+  const fyEndMonth = fyStartMonth === 1 ? 12 : fyStartMonth - 1;
+  const fyEndDay = new Date(fyEndYear, fyEndMonth, 0).getDate(); // last day of that month
+  const fyStartStr = `${fyStartYear}-${String(fyStartMonth).padStart(2, '0')}-01`;
+  const fyEndStr = `${fyEndYear}-${String(fyEndMonth).padStart(2, '0')}-${String(fyEndDay).padStart(2, '0')}`;
+  return { fyStart: fyStartStr, fyEnd: fyEndStr };
+}
+
 export default function Settings() {
   const { activeStore, isOnline } = useAuth();
   const [tab, setTab] = useState<'migration' | 'general' | 'schema' | 'cloud'>('general');
@@ -32,6 +63,8 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [geminiKeyStatus, setGeminiKeyStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [fyStartMonth, setFyStartMonth] = useState<number>(FY_DEFAULT_MONTH);
+  const [fyStatus, setFyStatus] = useState('');
 
   // Cloud Sync state
   const [localStats, setLocalStats] = useState<Record<string, number>>({});
@@ -58,6 +91,10 @@ export default function Settings() {
           loaded[r.key as keyof AppSettings] = r.value === 'true';
         }
         if (r.key === 'gemini_api_key') setGeminiApiKey(r.value);
+        if (r.key === FY_SETTING_KEY) {
+          const m = parseInt(r.value, 10);
+          if (!isNaN(m) && m >= 1 && m <= 12) setFyStartMonth(m);
+        }
       });
       setSettings(loaded);
     } catch (e) {
@@ -102,6 +139,22 @@ export default function Settings() {
     } catch (e) {
       console.error(e);
       setStatus('❌ Error saving settings');
+    }
+  };
+
+  const saveFyStartMonth = async () => {
+    setFyStatus('Saving...');
+    try {
+      const db = await getDB();
+      await db.execute(
+        `INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2`,
+        [FY_SETTING_KEY, String(fyStartMonth)]
+      );
+      setFyStatus('✅ Financial year saved!');
+      setTimeout(() => setFyStatus(''), 3000);
+    } catch (e) {
+      console.error(e);
+      setFyStatus('❌ Error saving FY setting');
     }
   };
 
@@ -264,6 +317,68 @@ export default function Settings() {
         )}
         {tab === 'general' && (
           <div className="max-w-4xl space-y-6">
+
+            {/* Financial Year Settings */}
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+              <div className="px-6 py-4 border-b border-slate-200 bg-gradient-to-r from-indigo-50 to-blue-50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center">
+                    <Settings2 size={14} className="text-white" />
+                  </div>
+                  <div>
+                    <h2 className="font-bold text-slate-800 text-sm">Financial Year Settings</h2>
+                    <p className="text-xs text-slate-500">Set the starting month of your financial year for bill numbering & duplicate detection</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-brand h-8 flex items-center">{fyStatus}</span>
+                  <button
+                    onClick={saveFyStartMonth}
+                    className="flex items-center gap-2 bg-brand hover:bg-brand-hover text-white px-3 py-1.5 rounded-md text-sm font-medium shadow-sm transition-all"
+                  >
+                    <Save size={14} /> Save FY
+                  </button>
+                </div>
+              </div>
+              <div className="p-6">
+                <div className="flex items-center gap-6">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">FY Start Month</label>
+                    <select
+                      value={fyStartMonth}
+                      onChange={e => setFyStartMonth(Number(e.target.value))}
+                      className="h-10 border border-slate-200 rounded-lg px-3 pr-8 text-sm font-medium text-slate-700 focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 shadow-sm bg-white"
+                    >
+                      {[
+                        { val: 1, label: 'January (Jan 1)' },
+                        { val: 2, label: 'February (Feb 1)' },
+                        { val: 3, label: 'March (Mar 1)' },
+                        { val: 4, label: 'April (Apr 1) — Standard India' },
+                        { val: 7, label: 'July (Jul 1)' },
+                        { val: 10, label: 'October (Oct 1)' },
+                      ].map(opt => (
+                        <option key={opt.val} value={opt.val}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex-1 p-3 rounded-lg bg-indigo-50 border border-indigo-100 text-sm text-indigo-700">
+                    <p className="font-semibold mb-1">Current Financial Year</p>
+                    <p className="text-xs font-mono">
+                      {(() => {
+                        const now = new Date();
+                        const m = now.getMonth() + 1;
+                        const y = now.getFullYear();
+                        const fyY = m >= fyStartMonth ? y : y - 1;
+                        const fyEndM = fyStartMonth === 1 ? 12 : fyStartMonth - 1;
+                        const fyEndY = fyY + 1;
+                        return `FY ${fyY}-${String(fyEndY).slice(2)} (${new Date(fyY, fyStartMonth - 1, 1).toLocaleString('default', { month: 'long' })} ${fyY} → ${new Date(fyEndY, fyEndM - 1, 1).toLocaleString('default', { month: 'long' })} ${fyEndY})`;
+                      })()}
+                    </p>
+                    <p className="text-xs text-indigo-500 mt-1">Bills with the same number in different FY are treated as separate bills.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
               <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">

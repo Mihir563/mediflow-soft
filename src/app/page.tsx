@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import FastBilling from '@/components/FastBilling';
 import Dashboard from '@/views/Dashboard';
 import SaleInvoice from '@/views/SaleInvoice';
@@ -15,6 +15,7 @@ import GlobalSearch from '@/components/GlobalSearch';
 import LoginPage from '@/components/LoginPage';
 import StoreSelector from '@/components/StoreSelector';
 import AdminDashboard from '@/components/AdminDashboard';
+import BillTabBar, { BillTab } from '@/components/BillTabBar';
 import { useAuth } from '@/lib/AuthContext';
 import { MediFlowLogo } from '@/components/MediFlowLogo';
 import {
@@ -39,6 +40,13 @@ const navItems: { page: Page; label: string; icon: any; shortcut: string; group?
   { page: 'settings', label: 'Settings', icon: Settings2, shortcut: 'Alt+7', group: 'System' },
 ];
 
+// ─── Tab helpers ───────────────────────────────────────────────────────────────
+let tabSeq = 0;
+const newTabId = () => `tab-${++tabSeq}-${Date.now()}`;
+
+const makeNewPurchaseTab = (): BillTab => ({ id: newTabId(), label: 'New Purchase', editTxnId: null, isDirty: false });
+const makeNewSaleTab = (): BillTab => ({ id: newTabId(), label: 'New Sale', editTxnId: null, isDirty: false });
+
 export default function Home() {
   // ── Auth state ──────────────────────────────────────────────────────────────
   const { user, profile, loading: authLoading, isSuperAdmin, activeStore, activeRole, signOut, isOnline } = useAuth();
@@ -54,16 +62,66 @@ export default function Home() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [editPurchaseTxnId, setEditPurchaseTxnId] = useState<number | null>(null);
-  const [editSaleTxnId, setEditSaleTxnId] = useState<number | null>(null);
+
+  // ── Tab state ────────────────────────────────────────────────────────────────
+  const [purchaseTabs, setPurchaseTabs] = useState<BillTab[]>(() => [makeNewPurchaseTab()]);
+  const [activePurchaseTabId, setActivePurchaseTabId] = useState(() => purchaseTabs[0].id);
+  const [saleTabs, setSaleTabs] = useState<BillTab[]>(() => [makeNewSaleTab()]);
+  const [activeSaleTabId, setActiveSaleTabId] = useState(() => saleTabs[0].id);
+
+  // Update a tab label (called from PurchaseBill/SaleInvoice when bill number changes)
+  const updatePurchaseTabLabel = useCallback((tabId: string, label: string, isDirty?: boolean) => {
+    setPurchaseTabs(prev => prev.map(t => t.id === tabId ? { ...t, label, ...(isDirty !== undefined ? { isDirty } : {}) } : t));
+  }, []);
+  const updateSaleTabLabel = useCallback((tabId: string, label: string, isDirty?: boolean) => {
+    setSaleTabs(prev => prev.map(t => t.id === tabId ? { ...t, label, ...(isDirty !== undefined ? { isDirty } : {}) } : t));
+  }, []);
+
+  // Add a new purchase tab
+  const addPurchaseTab = useCallback(() => {
+    const tab = makeNewPurchaseTab();
+    setPurchaseTabs(prev => [...prev, tab]);
+    setActivePurchaseTabId(tab.id);
+  }, []);
+
+  // Add a new sale tab
+  const addSaleTab = useCallback(() => {
+    const tab = makeNewSaleTab();
+    setSaleTabs(prev => [...prev, tab]);
+    setActiveSaleTabId(tab.id);
+  }, []);
+
+  // Close a purchase tab
+  const closePurchaseTab = useCallback((tabId: string) => {
+    setPurchaseTabs(prev => {
+      if (prev.length <= 1) return prev;
+      const idx = prev.findIndex(t => t.id === tabId);
+      const next = prev.filter(t => t.id !== tabId);
+      if (tabId === activePurchaseTabId) {
+        setActivePurchaseTabId(next[Math.max(0, idx - 1)].id);
+      }
+      return next;
+    });
+  }, [activePurchaseTabId]);
+
+  // Close a sale tab
+  const closeSaleTab = useCallback((tabId: string) => {
+    setSaleTabs(prev => {
+      if (prev.length <= 1) return prev;
+      const idx = prev.findIndex(t => t.id === tabId);
+      const next = prev.filter(t => t.id !== tabId);
+      if (tabId === activeSaleTabId) {
+        setActiveSaleTabId(next[Math.max(0, idx - 1)].id);
+      }
+      return next;
+    });
+  }, [activeSaleTabId]);
 
   // Navigate to a new page, pushing current page onto the history stack
   const navigate = useCallback((p: Page, query?: string) => {
     setPageHistory(prev => [...prev, page]);
     setPage(p);
     if (query !== undefined) setSearchQuery(query);
-    if (p !== 'purchase') setEditPurchaseTxnId(null);
-    if (p !== 'sale') setEditSaleTxnId(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
@@ -74,23 +132,36 @@ export default function Home() {
       const history = [...prev];
       const prevPage = history.pop()!;
       setPage(prevPage);
-      if (prevPage !== 'purchase') setEditPurchaseTxnId(null);
-      if (prevPage !== 'sale') setEditSaleTxnId(null);
       return history;
     });
   }, []);
 
   const handleEditPurchase = useCallback((txnId: number) => {
     setPageHistory(prev => [...prev, page]);
-    setEditPurchaseTxnId(txnId);
     setPage('purchase');
+    // Open in a new purchase tab
+    const tab: BillTab = { id: newTabId(), label: `Edit #${txnId}`, editTxnId: txnId, isDirty: false };
+    setPurchaseTabs(prev => {
+      // Don't open the same txn twice
+      const existing = prev.find(t => t.editTxnId === txnId);
+      if (existing) { setActivePurchaseTabId(existing.id); return prev; }
+      setActivePurchaseTabId(tab.id);
+      return [...prev, tab];
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
   const handleEditSale = useCallback((txnId: number) => {
     setPageHistory(prev => [...prev, page]);
-    setEditSaleTxnId(txnId);
     setPage('sale');
+    // Open in a new sale tab
+    const tab: BillTab = { id: newTabId(), label: `Edit #${txnId}`, editTxnId: txnId, isDirty: false };
+    setSaleTabs(prev => {
+      const existing = prev.find(t => t.editTxnId === txnId);
+      if (existing) { setActiveSaleTabId(existing.id); return prev; }
+      setActiveSaleTabId(tab.id);
+      return [...prev, tab];
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
@@ -367,11 +438,71 @@ export default function Home() {
         )}
 
         {/* Page Content */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden flex flex-col">
           {page === 'dashboard' && <Dashboard onNavigate={navigate} onEditPurchase={handleEditPurchase} onEditSale={handleEditSale} />}
           {page === 'pos' && <FastBilling />}
-          {page === 'sale' && <SaleInvoice key={editSaleTxnId ?? 'new'} editTxnId={editSaleTxnId} onSaved={() => setEditSaleTxnId(null)} />}
-          {page === 'purchase' && <PurchaseBill key={editPurchaseTxnId ?? 'new'} editTxnId={editPurchaseTxnId} onSaved={() => setEditPurchaseTxnId(null)} />}
+          {page === 'sale' && (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <BillTabBar
+                tabs={saleTabs}
+                activeTabId={activeSaleTabId}
+                type="sale"
+                onSelect={setActiveSaleTabId}
+                onClose={closeSaleTab}
+                onNew={addSaleTab}
+              />
+              <div className="flex-1 overflow-hidden relative">
+                {saleTabs.map(tab => (
+                  <div
+                    key={tab.id}
+                    className="absolute inset-0"
+                    style={{ display: tab.id === activeSaleTabId ? 'flex' : 'none', flexDirection: 'column' }}
+                  >
+                    <SaleInvoice
+                      key={tab.id}
+                      editTxnId={tab.editTxnId}
+                      tabId={tab.id}
+                      onSaved={() => {
+                        setSaleTabs(prev => prev.map(t => t.id === tab.id ? { ...t, editTxnId: null, label: 'New Sale', isDirty: false } : t));
+                      }}
+                      onLabelChange={(label, isDirty) => updateSaleTabLabel(tab.id, label, isDirty)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {page === 'purchase' && (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <BillTabBar
+                tabs={purchaseTabs}
+                activeTabId={activePurchaseTabId}
+                type="purchase"
+                onSelect={setActivePurchaseTabId}
+                onClose={closePurchaseTab}
+                onNew={addPurchaseTab}
+              />
+              <div className="flex-1 overflow-hidden relative">
+                {purchaseTabs.map(tab => (
+                  <div
+                    key={tab.id}
+                    className="absolute inset-0"
+                    style={{ display: tab.id === activePurchaseTabId ? 'flex' : 'none', flexDirection: 'column' }}
+                  >
+                    <PurchaseBill
+                      key={tab.id}
+                      editTxnId={tab.editTxnId}
+                      tabId={tab.id}
+                      onSaved={() => {
+                        setPurchaseTabs(prev => prev.map(t => t.id === tab.id ? { ...t, editTxnId: null, label: 'New Purchase', isDirty: false } : t));
+                      }}
+                      onLabelChange={(label, isDirty) => updatePurchaseTabLabel(tab.id, label, isDirty)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {page === 'purchase_history' && <PurchaseHistory onEditPurchase={handleEditPurchase} />}
           {page === 'parties' && <Parties initialSearch={searchQuery} />}
           {page === 'items' && <Items initialSearch={searchQuery} />}

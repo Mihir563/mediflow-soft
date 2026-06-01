@@ -5,7 +5,7 @@ import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle, Edit3 } from '
 import ItemModal from '@/components/ItemModal';
 import ScannerPanel, { GeminiBillData } from '@/components/ScannerPanel';
 import QtyCalculatorModal from '@/components/QtyCalculatorModal';
-import { AppSettings, defaultSettings } from '@/views/Settings';
+import { AppSettings, defaultSettings, getFyStartMonth, getFyBounds } from '@/views/Settings';
 import SmartDateInput from '@/components/SmartDateInput';
 
 interface SaleItemOption {
@@ -54,6 +54,9 @@ interface Party {
 const DEFAULT_ROW_COUNT = 10;
 const createFallbackInvoiceNo = () => `INV-${Date.now()}`;
 
+// Draft persistence key
+const getDraftKey = (tabId?: string) => `sale_draft_${tabId || 'default'}`;
+
 const createEmptyRow = (rowId: number): SaleRow => ({
   rowId,
   itemId: null,
@@ -86,7 +89,8 @@ const formatExpiryInput = (value: string) => {
   return `${day}-${month}-${year}`;
 };
 
-export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number | null; onSaved?: () => void } = {}) {
+export default function SaleInvoice({ editTxnId, onSaved, tabId, onLabelChange }: { editTxnId?: number | null; onSaved?: () => void; tabId?: string; onLabelChange?: (label: string, isDirty: boolean) => void } = {}) {
+  const DRAFT_KEY = getDraftKey(tabId);
   const [party, setParty] = useState<Party | null>(null);
   const [partySearch, setPartySearch] = useState('');
   const [partyResults, setPartyResults] = useState<Party[]>([]);
@@ -111,6 +115,8 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
   
   const [selectedItemIndex, setSelectedItemIndex] = useState(-1);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [fyStartMonth, setFyStartMonth] = useState(4);
+  const [draftRestored, setDraftRestored] = useState(false);
 
   const rowSeedRef = useRef(DEFAULT_ROW_COUNT + 1);
   const partyInputRef = useRef<HTMLInputElement>(null);
@@ -123,12 +129,11 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
   async function generateInvoiceNo() {
     try {
       const db = await getDB();
-      // Count sales only within the current financial year (Apr 1 – Mar 31)
+      // Count sales only within the current financial year using configured FY start month
+      const fyM = await getFyStartMonth();
+      setFyStartMonth(fyM);
       const now = new Date();
-      const month = now.getMonth() + 1;
-      const year = now.getFullYear();
-      const fyStart = month >= 4 ? `${year}-04-01` : `${year - 1}-04-01`;
-      const fyEnd = month >= 4 ? `${year + 1}-03-31` : `${year}-03-31`;
+      const { fyStart, fyEnd } = getFyBounds(now.toISOString().split('T')[0], fyM);
       const res = await db.select<Array<{ cnt: number }>>(
         `SELECT COUNT(*) as cnt FROM transactions WHERE type='sale' AND date >= $1 AND date <= $2`,
         [fyStart, fyEnd]
@@ -156,6 +161,45 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
     };
     loadSettings();
   }, []);
+
+  // ── Draft persistence: restore on mount (only for new bills, not edits) ──
+  useEffect(() => {
+    if (editTxnId) { setDraftRestored(true); return; }
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        if (draft.invoiceNo) setInvoiceNo(draft.invoiceNo);
+        if (draft.invoiceDate) setInvoiceDate(draft.invoiceDate);
+        if (draft.paymentType) setPaymentType(draft.paymentType);
+        if (draft.challanNo) setChallanNo(draft.challanNo);
+        if (draft.description) setDescription(draft.description);
+        if (draft.paidAmount !== undefined) setPaidAmount(draft.paidAmount);
+        if (draft.party) { setParty(draft.party); setPartySearch(draft.party.name); }
+        if (draft.cart && Array.isArray(draft.cart) && draft.cart.length > 0) {
+          const rows: SaleRow[] = draft.cart;
+          let seed = Math.max(...rows.map((r: SaleRow) => r.rowId), DEFAULT_ROW_COUNT) + 1;
+          rowSeedRef.current = seed;
+          while (rows.length < DEFAULT_ROW_COUNT) rows.push(createEmptyRow(seed++));
+          setCart(rows);
+        }
+        setStatus('📋 Draft restored — unsaved changes loaded.');
+        setTimeout(() => setStatus(prev => prev.startsWith('📋') ? '' : prev), 4000);
+      }
+    } catch {}
+    setDraftRestored(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [DRAFT_KEY]);
+
+  // ── Draft persistence: auto-save on every relevant state change ──
+  useEffect(() => {
+    if (!draftRestored) return;
+    if (isEditMode) return;
+    try {
+      const draft = { invoiceNo, invoiceDate, paymentType, challanNo, description, paidAmount, party, cart };
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+    } catch {}
+  }, [invoiceNo, invoiceDate, paymentType, challanNo, description, paidAmount, party, cart, isEditMode, draftRestored, DRAFT_KEY]);
 
   // Load existing sale for editing
   useEffect(() => {
@@ -219,6 +263,7 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
     };
     loadExistingTransaction();
   }, [editTxnId]);
+
 
   function focusRowInput(rowId?: number | null) {
     const targetId = rowId ?? cart.find(row => !row.itemId)?.rowId ?? cart[0]?.rowId ?? null;
@@ -365,6 +410,16 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
   };
 
   const validRows = useMemo(() => cart.filter(row => (row.itemId || row.name.trim()) && (Number(row.qty) || 0) > 0 && (Number(row.price) || 0) > 0), [cart]);
+
+  // ── Notify parent tab of label changes ── (placed after validRows declaration)
+  useEffect(() => {
+    if (!onLabelChange) return;
+    const hasItems = validRows.length > 0;
+    const label = invoiceNo.trim() || (isEditMode ? 'Edit Invoice' : 'New Sale');
+    onLabelChange(label, hasItems);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoiceNo, validRows.length, isEditMode]);
+
   const { subtotal, totalDiscount, totalTax, net, afterDiscount } = useMemo(() => {
     let sub = 0, disc = 0, tax = 0, total = 0;
     validRows.forEach(row => {
@@ -409,21 +464,14 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
     try {
       const db = await getDB();
 
-      // Duplicate invoice number check — scoped to the same financial year (Apr 1 – Mar 31)
-      // Indian pharma bills reset their invoice numbers every financial year, so the same
-      // number in different years is perfectly valid and should NOT be blocked.
-      const invDate = new Date(invoiceDate);
-      const invMonth = invDate.getMonth() + 1; // 1-12
-      const invYear = invDate.getFullYear();
-      const fyStart = invMonth >= 4
-        ? `${invYear}-04-01`
-        : `${invYear - 1}-04-01`;
-      const fyEnd = invMonth >= 4
-        ? `${invYear + 1}-03-31`
-        : `${invYear}-03-31`;
+      // Duplicate invoice number check — scoped to the same financial year
+      // Uses admin-configured FY start month instead of hardcoded April.
+      const { fyStart, fyEnd } = getFyBounds(invoiceDate, fyStartMonth);
+      // Capture editTxnDbId synchronously
+      const currentEditId = editTxnDbId;
 
       const existing = await db.select<any[]>(
-        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'sale' AND date >= $2 AND date <= $3${isEditMode && editTxnDbId ? ` AND id != ${editTxnDbId}` : ''}`,
+        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'sale' AND date >= $2 AND date <= $3${currentEditId ? ` AND id != ${currentEditId}` : ''}`,
         [invoiceNo.trim(), fyStart, fyEnd]
       );
       if (existing.length > 0) {
@@ -502,6 +550,9 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
         }
         setStatus(`✅ Invoice ${invoiceNo} saved!`);
       }
+
+      // Clear draft on successful save
+      try { localStorage.removeItem(DRAFT_KEY); } catch {}
 
       setCart(Array.from({ length: DEFAULT_ROW_COUNT }, (_, index) => createEmptyRow(index + 1)));
       rowSeedRef.current = DEFAULT_ROW_COUNT + 1;
@@ -1041,6 +1092,8 @@ export default function SaleInvoice({ editTxnId, onSaved }: { editTxnId?: number
                   setEditTxnDbId(null);
                   setStatus('');
                   generateInvoiceNo();
+                  // Clear draft on manual clear
+                  try { localStorage.removeItem(DRAFT_KEY); } catch {}
                 }}
                 className="px-4 h-8 border border-slate-200 hover:bg-slate-100 text-slate-600 text-xs font-medium transition-colors bg-white"
               >

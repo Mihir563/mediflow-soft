@@ -1,12 +1,12 @@
 'use client';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { getDB } from '@/lib/db';
 import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle, Edit3 } from 'lucide-react';
 import ItemModal from '@/components/ItemModal';
 import ScannerPanel, { GeminiBillData } from '@/components/ScannerPanel';
 import QtyCalculatorModal from '@/components/QtyCalculatorModal';
 import BatchModal from '@/components/BatchModal';
-import { AppSettings, defaultSettings } from '@/views/Settings';
+import { AppSettings, defaultSettings, getFyStartMonth, getFyBounds } from '@/views/Settings';
 import SmartDateInput from '@/components/SmartDateInput';
 import SmartExpiryInput from '@/components/SmartExpiryInput';
 
@@ -51,6 +51,9 @@ interface PurchaseRow {
 const DEFAULT_ROW_COUNT = 10;
 const createPurchaseBillNo = () => `PUR-${Date.now().toString().slice(-6)}`;
 
+// Draft persistence key — unique per tab so multiple tabs don't interfere
+const getDraftKey = (tabId?: string) => `purchase_draft_${tabId || 'default'}`;
+
 const createEmptyRow = (rowId: number): PurchaseRow => ({
   rowId,
   itemId: null,
@@ -82,7 +85,8 @@ const formatExpiryInput = (value: string) => {
   return `${day}-${month}-${year}`;
 };
 
-export default function PurchaseBill({ editTxnId, onSaved }: { editTxnId?: number | null; onSaved?: () => void } = {}) {
+export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange }: { editTxnId?: number | null; onSaved?: () => void; tabId?: string; onLabelChange?: (label: string, isDirty: boolean) => void } = {}) {
+  const DRAFT_KEY = getDraftKey(tabId);
   const [vendor, setVendor] = useState<VendorOption | null>(null);
   const [vendorSearch, setVendorSearch] = useState('');
   const [vendorResults, setVendorResults] = useState<VendorOption[]>([]);
@@ -110,6 +114,8 @@ export default function PurchaseBill({ editTxnId, onSaved }: { editTxnId?: numbe
   const [selectedItemIndex, setSelectedItemIndex] = useState(-1);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [batchModalRowId, setBatchModalRowId] = useState<number | null>(null);
+  const [fyStartMonth, setFyStartMonth] = useState(4); // default April, loaded from settings
+  const [draftRestored, setDraftRestored] = useState(false);
 
   const rowSeedRef = useRef(DEFAULT_ROW_COUNT + 1);
   const itemInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
@@ -230,10 +236,62 @@ export default function PurchaseBill({ editTxnId, onSaved }: { editTxnId?: numbe
           }
         });
         setSettings(loaded);
+        // Load FY start month
+        const fyM = await getFyStartMonth();
+        setFyStartMonth(fyM);
       } catch (e) {}
     };
     loadSettings();
   }, []);
+
+  // ── Draft persistence: restore on mount (only for new bills, not edits) ──
+  useEffect(() => {
+    if (editTxnId) { setDraftRestored(true); return; } // skip for edit mode
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        if (draft.billNo) setBillNo(draft.billNo);
+        if (draft.billDate) setBillDate(draft.billDate);
+        if (draft.paymentType) setPaymentType(draft.paymentType);
+        if (draft.challanNo) setChallanNo(draft.challanNo);
+        if (draft.description) setDescription(draft.description);
+        if (draft.paidAmount !== undefined) setPaidAmount(draft.paidAmount);
+        if (draft.vendor) { setVendor(draft.vendor); setVendorSearch(draft.vendor.name); }
+        if (draft.cart && Array.isArray(draft.cart) && draft.cart.length > 0) {
+          const rows: PurchaseRow[] = draft.cart;
+          // ensure we have at least DEFAULT_ROW_COUNT rows
+          let seed = Math.max(...rows.map(r => r.rowId), DEFAULT_ROW_COUNT) + 1;
+          rowSeedRef.current = seed;
+          while (rows.length < DEFAULT_ROW_COUNT) rows.push(createEmptyRow(seed++));
+          setCart(rows);
+        }
+        setStatus('📋 Draft restored — unsaved changes loaded.');
+        setTimeout(() => setStatus(prev => prev.startsWith('📋') ? '' : prev), 4000);
+      }
+    } catch {}
+    setDraftRestored(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [DRAFT_KEY]);
+
+  // ── Draft persistence: auto-save on every relevant state change ──
+  useEffect(() => {
+    if (!draftRestored) return; // don't save before we've loaded
+    if (isEditMode) return;     // don't overwrite draft while in edit mode
+    try {
+      const draft = { billNo, billDate, paymentType, challanNo, description, paidAmount, vendor, cart };
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+    } catch {}
+  }, [billNo, billDate, paymentType, challanNo, description, paidAmount, vendor, cart, isEditMode, draftRestored, DRAFT_KEY]);
+
+  // ── Notify parent tab of label changes ──
+  useEffect(() => {
+    if (!onLabelChange) return;
+    const hasItems = validRows.length > 0;
+    const label = billNo.trim() || (isEditMode ? 'Edit Bill' : 'New Purchase');
+    onLabelChange(label, hasItems);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [billNo, validRows.length, isEditMode]);
 
   const searchVendors = async (q: string) => {
     setVendorSearch(q);
@@ -387,24 +445,18 @@ export default function PurchaseBill({ editTxnId, onSaved }: { editTxnId?: numbe
       const db = await getDB();
 
       // Check for duplicate bill number (skip check if editing same bill)
-      // Scoped to the same financial year (Apr 1 – Mar 31): suppliers reset invoice numbers yearly.
-      const bdDate = new Date(billDate);
-      const bdMonth = bdDate.getMonth() + 1; // 1-12
-      const bdYear = bdDate.getFullYear();
-      const fyStart = bdMonth >= 4
-        ? `${bdYear}-04-01`
-        : `${bdYear - 1}-04-01`;
-      const fyEnd = bdMonth >= 4
-        ? `${bdYear + 1}-03-31`
-        : `${bdYear}-03-31`;
+      // Scoped to the same financial year based on admin-configured FY start month.
+      const { fyStart, fyEnd } = getFyBounds(billDate, fyStartMonth);
+      // Capture editTxnDbId synchronously before any await
+      const currentEditId = editTxnDbId;
 
       const existing = await db.select<any[]>(
-        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'purchase' AND date >= $2 AND date <= $3${isEditMode && editTxnDbId ? ` AND id != ${editTxnDbId}` : ''}`,
+        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'purchase' AND date >= $2 AND date <= $3${currentEditId ? ` AND id != ${currentEditId}` : ''}`,
         [billNo.trim(), fyStart, fyEnd]
       );
       if (existing.length > 0) {
         const fyLabel = `${new Date(fyStart).getFullYear()}-${String(new Date(fyEnd).getFullYear()).slice(2)}`;
-        setStatus(`❌ A purchase bill \"${billNo.trim()}\" already exists in FY ${fyLabel}! Use a different bill number.`);
+        setStatus(`❌ A purchase bill "${billNo.trim()}" already exists in FY ${fyLabel}! Use a different bill number.`);
         return;
       }
 
@@ -520,6 +572,9 @@ export default function PurchaseBill({ editTxnId, onSaved }: { editTxnId?: numbe
         }
         setStatus(`✅ Purchase ${billNo} saved!`);
       }
+
+      // Clear draft on successful save
+      try { localStorage.removeItem(DRAFT_KEY); } catch {}
 
       setCart(Array.from({ length: DEFAULT_ROW_COUNT }, (_, index) => createEmptyRow(index + 1)));
       rowSeedRef.current = DEFAULT_ROW_COUNT + 1;
@@ -1085,6 +1140,8 @@ export default function PurchaseBill({ editTxnId, onSaved }: { editTxnId?: numbe
                   setIsEditMode(false);
                   setEditTxnDbId(null);
                   setStatus('');
+                  // Clear draft on manual clear
+                  try { localStorage.removeItem(DRAFT_KEY); } catch {}
                 }}
                 className="px-4 h-8 border border-slate-200 hover:bg-slate-100 text-slate-600 text-xs font-medium transition-colors bg-white"
               >

@@ -156,31 +156,48 @@ export async function backupLocalToCloud(
   }
 
   // 5. Upload Transaction Items
+  // IMPORTANT: The ID must be derived from the TRANSACTION UUID + row position,
+  // NOT from the local SQLite integer ID (r.id). Local IDs start at 1 on every
+  // device, so two PCs would generate the same UUID → duplicate key error.
+  // By using txnMap[r.txn_id] + index, the UUID is globally unique per bill line.
   const validTxnItems = localTxnItems.filter(r => txnMap[r.txn_id]);
   if (validTxnItems.length > 0) {
-    const cloudTxnItems = validTxnItems.map(r => ({
-      id: stableUUID('transaction_items', r.id),
-      txn_id: txnMap[r.txn_id],
-      item_id: r.item_id && itemMap[r.item_id] ? itemMap[r.item_id] : null,
-      item_name: r.item_name || null,
-      quantity: Number(r.quantity) || 0,
-      unit: r.unit || null,
-      price: Number(r.price) || 0,
-      amount: Number(r.amount) || 0,
-      discount_pct: Number(r.discount_pct) || 0,
-      discount_amt: Number(r.discount_amt) || 0,
-      tax_pct: Number(r.tax_pct) || 0,
-      tax_amt: Number(r.tax_amt) || 0,
-      scheme_amount: Number(r.scheme_amount) || 0,
-      batch_no: r.batch_no || null,
-      expiry_date: r.expiry_date || null,
-    }));
+    // Group by txn_id so row index is relative to each transaction
+    const byTxn: Record<string, any[]> = {};
+    validTxnItems.forEach(r => {
+      const txnUuid = txnMap[r.txn_id];
+      if (!byTxn[txnUuid]) byTxn[txnUuid] = [];
+      byTxn[txnUuid].push(r);
+    });
+
+    const cloudTxnItems = validTxnItems.map(r => {
+      const txnUuid = txnMap[r.txn_id];
+      const rowIdx = byTxn[txnUuid].indexOf(r);
+      return {
+        // Key: stableUUID based on txn UUID + row index — unique across all devices
+        id: stableUUID('transaction_items', `${txnUuid}:${rowIdx}`),
+        txn_id: txnUuid,
+        item_id: r.item_id && itemMap[r.item_id] ? itemMap[r.item_id] : null,
+        item_name: r.item_name || null,
+        quantity: Number(r.quantity) || 0,
+        unit: r.unit || null,
+        price: Number(r.price) || 0,
+        amount: Number(r.amount) || 0,
+        discount_pct: Number(r.discount_pct) || 0,
+        discount_amt: Number(r.discount_amt) || 0,
+        tax_pct: Number(r.tax_pct) || 0,
+        tax_amt: Number(r.tax_amt) || 0,
+        scheme_amount: Number(r.scheme_amount) || 0,
+        batch_no: r.batch_no || null,
+        expiry_date: r.expiry_date || null,
+      };
+    });
 
     const chunks = chunkArray(cloudTxnItems, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading transaction items batch ${i + 1}/${chunks.length}...`, 85, 100);
-      const { error } = await supabase.from('transaction_items').upsert(chunks[i]);
-      if (error) throw new Error(`Backup transaction items error: ${error.message}`);
+      const { error } = await supabase.from('transaction_items').upsert(chunks[i], { onConflict: 'id' });
+      if (error) throw new Error(`Backup transaction items error (batch ${i + 1}): ${error.message}`);
     }
   }
 
@@ -240,20 +257,16 @@ export async function backupLocalToCloud(
     }
   }
 
-  // 8. Upload App Settings — full replace, EXCLUDE device-specific keys (gemini_api_key)
-  onProgress('Syncing app settings...', 97, 100);
-  const { error: delSettingsErr } = await supabase
-    .from('app_settings')
-    .delete()
-    .eq('store_id', storeId);
-  if (delSettingsErr) throw new Error(`Backup app_settings delete error: ${delSettingsErr.message}`);
-
-  // Build a merged map: start from defaults so we always have the show_* keys,
-  // then overlay whatever the user has explicitly saved locally.
+  // 8. Upload App Settings — upsert so it's safe to run backup multiple times.
   // NEVER include gemini_api_key — it is device-specific and must stay local.
+  onProgress('Syncing app settings...', 97, 100);
+
+  // Build a merged map: start from defaults so we always have the show_* keys + fy_start_month,
+  // then overlay whatever the user has explicitly saved locally.
   const defaultShowKeys: Record<string, string> = {
     show_mrp: 'true', show_stock: 'true', show_batch: 'true',
     show_expiry: 'true', show_hsn: 'true', show_tax: 'true', show_discount: 'true',
+    fy_start_month: '4',
   };
   const settingsMap: Record<string, string> = { ...defaultShowKeys };
   localSettings.forEach(r => {
@@ -272,7 +285,10 @@ export async function backupLocalToCloud(
     const chunks = chunkArray(cloudSettings, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading app settings batch ${i + 1}/${chunks.length}...`, 99, 100);
-      const { error } = await supabase.from('app_settings').insert(chunks[i]);
+      // upsert on (store_id, key) — safe to run multiple times, no duplicate errors
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert(chunks[i], { onConflict: 'store_id,key' });
       if (error) throw new Error(`Backup app settings error: ${error.message}`);
     }
   }

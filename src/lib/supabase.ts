@@ -15,6 +15,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false, // Tauri / desktop — no URL-based auth
+    storageKey: 'mediflow-auth-token', // named storage key for clarity
+    // Supabase issues tokens with configurable expiry. The refresh token is valid
+    // for the period set in the Supabase project (default 7 days / 604800 seconds).
+    // autoRefreshToken: true ensures the access token is silently renewed before expiry.
   },
 });
 
