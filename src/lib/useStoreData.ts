@@ -125,12 +125,33 @@ export function useDashboardStats() {
           pendingBalance:      (pendingRes.data ?? []).reduce((s, r) => s + (Number(r.balance_due) || 0), 0),
         });
 
-        setRecentTxns(
-          (recentRes.data ?? []).map((t: any) => ({
-            ...t,
-            party_name: (t.parties as any)?.name ?? null,
-          }))
-        );
+        const cloudTxns = (recentRes.data ?? []).map((t: any) => ({
+          ...t,
+          party_name: (t.parties as any)?.name ?? null,
+        }));
+
+        if (cloudTxns.length > 0) {
+          // Cloud has data — use it directly
+          setRecentTxns(cloudTxns);
+        } else {
+          // Cloud has no transactions yet (backup not run, or no data synced yet).
+          // Fall back to local SQLite so dashboard history is never blank when
+          // data exists locally.
+          try {
+            const { getDB } = await import('@/lib/db');
+            const db = await getDB();
+            const localRows = await db.select<any[]>(
+              `SELECT t.*, p.name as party_name
+               FROM transactions t
+               LEFT JOIN parties p ON t.party_id = p.id
+               ORDER BY COALESCE(t.created_at, t.date) DESC
+               LIMIT 15`
+            );
+            setRecentTxns(localRows);
+          } catch (localErr: any) {
+            console.warn('[useDashboardStats] local fallback failed:', localErr.message);
+          }
+        }
       } catch (e: any) {
         console.error('[useDashboardStats cloud]', e.message);
       }

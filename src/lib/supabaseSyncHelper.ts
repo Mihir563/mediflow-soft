@@ -66,7 +66,7 @@ export async function backupLocalToCloud(
   onProgress('Reading local app settings...', 42, 100);
   const localSettings = await db.select<any[]>('SELECT * FROM app_settings');
 
-  // Build Stable ID Maps for Relationships
+  // ── Build initial stable ID maps (fallback for purely offline data) ─────────
   const itemMap: Record<number, string> = {};
   const partyMap: Record<number, string> = {};
   const txnMap: Record<number, string> = {};
@@ -75,35 +75,182 @@ export async function backupLocalToCloud(
   localParties.forEach(r => { partyMap[r.id] = stableUUID('parties', r.id); });
   localTxns.forEach(r => { txnMap[r.id] = stableUUID('transactions', r.id); });
 
+  // ── Pre-fetch existing cloud records to resolve UUID conflicts ──────────────
+  //
+  // CRITICAL: When a device is used in online mode, its transactions, items, and
+  // parties are already stored in Supabase with cloud-generated random UUIDs.
+  // If backup generates stableUUIDs from local integer IDs (different UUIDs),
+  // upsert would try to INSERT duplicates → unique constraint violation on
+  // (store_id, invoice_no, type).
+  //
+  // We pre-fetch all existing cloud records and match them to local records by
+  // natural keys so backup always updates-in-place for already-synced data.
+  //
+  // IMPORTANT: Supabase silently caps all queries at 1000 rows by default.
+  // We must paginate to guarantee we see every record for large stores.
+
+  onProgress('Checking existing cloud data...', 43, 100);
+
+  // Paginated fetch — loops until all rows are received
+  async function fetchAllCloud<T = any>(
+    table: string,
+    select: string,
+    storeIdFilter: string,
+    pageSize = 1000
+  ): Promise<T[]> {
+    const all: T[] = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select(select)
+        .eq('store_id', storeIdFilter)
+        .range(from, from + pageSize - 1);
+      if (error) {
+        console.warn(`[Backup] fetchAllCloud(${table}) error:`, error.message);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      all.push(...(data as T[]));
+      if (data.length < pageSize) break; // Last page — we're done
+      from += pageSize;
+    }
+    return all;
+  }
+
+  const [existingCloudItems, existingCloudParties, existingCloudTxns] = await Promise.all([
+    fetchAllCloud('items',        'id, name',                      storeId),
+    fetchAllCloud('parties',      'id, name, phone',               storeId),
+    fetchAllCloud('transactions', 'id, invoice_no, type, date, total_amount', storeId),
+  ]);
+
+  // Build natural-key → cloud UUID lookup maps
+  const cloudItemByName: Record<string, string> = {};
+  existingCloudItems.forEach((r: any) => {
+    if (r.name) cloudItemByName[r.name.trim().toLowerCase()] = r.id;
+  });
+
+  const cloudPartyByName: Record<string, string> = {};
+  existingCloudParties.forEach((r: any) => {
+    if (r.name) cloudPartyByName[r.name.trim().toLowerCase()] = r.id;
+  });
+
+  // Primary match: invoice_no + type (most reliable for numbered bills)
+  const cloudTxnByKey: Record<string, string> = {};
+  // Secondary match: date + total_amount + type (fallback for NULL invoice_no / walk-in sales)
+  // Uses an ARRAY of cloud IDs per fingerprint so that multiple walk-in sales with the
+  // same date+amount each get a distinct cloud UUID consumed one-by-one.
+  const cloudTxnByFingerprint: Record<string, string[]> = {};
+  existingCloudTxns.forEach((r: any) => {
+    if (r.invoice_no) {
+      cloudTxnByKey[`${r.invoice_no}|${r.type}`] = r.id;
+    } else {
+      // Build fingerprint from date + amount + type + created_at for maximum precision
+      const dateKey = r.date ? String(r.date).split('T')[0] : '_';
+      const amtKey  = r.total_amount != null ? Number(r.total_amount).toFixed(2) : '_';
+      const fp = `${dateKey}|${amtKey}|${r.type}`;
+      if (!cloudTxnByFingerprint[fp]) cloudTxnByFingerprint[fp] = [];
+      cloudTxnByFingerprint[fp].push(r.id);
+    }
+  });
+
+  // Track consumed cloud UUIDs to prevent two local records mapping to the same cloud row
+  const consumedCloudIds = new Set<string>();
+
+  // Override stableUUID maps with existing cloud UUIDs where a match is found
+  localItems.forEach(r => {
+    const cloudId = r.name ? cloudItemByName[r.name.trim().toLowerCase()] : null;
+    if (cloudId) itemMap[r.id] = cloudId;
+  });
+
+  localParties.forEach(r => {
+    const cloudId = r.name ? cloudPartyByName[r.name.trim().toLowerCase()] : null;
+    if (cloudId) partyMap[r.id] = cloudId;
+  });
+
+  localTxns.forEach(r => {
+    if (r.invoice_no) {
+      // Primary match by invoice number
+      const cloudId = cloudTxnByKey[`${r.invoice_no}|${r.type}`];
+      if (cloudId && !consumedCloudIds.has(cloudId)) {
+        txnMap[r.id] = cloudId;
+        consumedCloudIds.add(cloudId);
+        return;
+      }
+    }
+    // Secondary match by date+amount fingerprint (walk-in / no invoice_no)
+    const dateKey = r.date ? String(r.date).split('T')[0] : '_';
+    const amtKey  = r.total_amount != null ? Number(r.total_amount).toFixed(2) : '_';
+    const fp = `${dateKey}|${amtKey}|${r.type}`;
+    const candidates = cloudTxnByFingerprint[fp];
+    if (candidates && candidates.length > 0) {
+      // Consume the first unconsumed candidate from the array
+      const idx = candidates.findIndex(id => !consumedCloudIds.has(id));
+      if (idx !== -1) {
+        txnMap[r.id] = candidates[idx];
+        consumedCloudIds.add(candidates[idx]);
+        return;
+      }
+    }
+    // No match found — stableUUID will be used (fresh insert, first backup from this device)
+  });
+
   // 2. Upload Items
+  // Self-healing: tries with default_vendor_id first (latest schema), falls back
+  // to without it if the customer's Supabase hasn't run migrate_vendor_tracking.sql.
   if (localItems.length > 0) {
-    const cloudItems = localItems.map(r => ({
-      id: itemMap[r.id],
-      store_id: storeId,
-      name: r.name,
-      hsn: r.hsn || null,
-      unit: r.unit || 'TAB',
-      sale_price: Number(r.sale_price) || 0,
-      purchase_price: Number(r.purchase_price) || 0,
-      opening_stock: Number(r.opening_stock) || 0,
-      current_stock: Number(r.current_stock) || 0,
-      min_stock: Number(r.min_stock) || 0,
-      category: r.category || null,
-      tax_rate: Number(r.tax_rate) || 0,
-      discount: Number(r.discount) || 0,
-      inclusive_tax: r.inclusive_tax === 1 || r.inclusive_tax === true,
-      tabs_per_strip: Number(r.tabs_per_strip) || 10,
-      strips_per_box: Number(r.strips_per_box) || 10,
-      // Default vendor: resolve local integer id -> cloud UUID
-      default_vendor_id: r.default_vendor_id && partyMap[r.default_vendor_id] ? partyMap[r.default_vendor_id] : null,
-      is_active: true,
-    }));
+    const buildCloudItems = (includeVendor: boolean) => localItems.map(r => {
+      const row: Record<string, any> = {
+        id: itemMap[r.id],
+        store_id: storeId,
+        name: r.name,
+        hsn: r.hsn || null,
+        unit: r.unit || 'TAB',
+        sale_price: Number(r.sale_price) || 0,
+        purchase_price: Number(r.purchase_price) || 0,
+        opening_stock: Number(r.opening_stock) || 0,
+        current_stock: Number(r.current_stock) || 0,
+        min_stock: Number(r.min_stock) || 0,
+        category: r.category || null,
+        tax_rate: Number(r.tax_rate) || 0,
+        discount: Number(r.discount) || 0,
+        inclusive_tax: r.inclusive_tax === 1 || r.inclusive_tax === true,
+        tabs_per_strip: Number(r.tabs_per_strip) || 10,
+        strips_per_box: Number(r.strips_per_box) || 10,
+        is_active: true,
+      };
+      if (includeVendor) {
+        row.default_vendor_id = r.default_vendor_id && partyMap[r.default_vendor_id]
+          ? partyMap[r.default_vendor_id] : null;
+      }
+      return row;
+    });
+
+    // Try with vendor column first, fall back without it if schema cache rejects it
+    let includeVendor = true;
+    const cloudItems = buildCloudItems(true);
 
     const chunks = chunkArray(cloudItems, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading items batch ${i + 1}/${chunks.length}...`, 45, 100);
-      const { error } = await supabase.from('items').upsert(chunks[i]);
-      if (error) throw new Error(`Backup items error: ${error.message}`);
+      const { error } = await supabase.from('items').upsert(chunks[i], { onConflict: 'id' });
+      if (error) {
+        // Schema cache miss — column doesn't exist in this Supabase instance yet
+        if (error.message.includes('schema cache') && includeVendor) {
+          console.warn('[Backup] default_vendor_id not in schema cache — retrying items without it');
+          includeVendor = false;
+          // Rebuild ALL items without the vendor column and restart from batch 0
+          const cleanItems = buildCloudItems(false);
+          const cleanChunks = chunkArray(cleanItems, 100);
+          for (let j = 0; j < cleanChunks.length; j++) {
+            onProgress(`Uploading items batch ${j + 1}/${cleanChunks.length}...`, 45, 100);
+            const { error: retryErr } = await supabase.from('items').upsert(cleanChunks[j], { onConflict: 'id' });
+            if (retryErr) throw new Error(`Backup items error: ${retryErr.message}`);
+          }
+          break; // Already uploaded all items in the retry loop
+        }
+        throw new Error(`Backup items error: ${error.message}`);
+      }
     }
   }
 
@@ -124,7 +271,7 @@ export async function backupLocalToCloud(
     const chunks = chunkArray(cloudParties, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading parties batch ${i + 1}/${chunks.length}...`, 60, 100);
-      const { error } = await supabase.from('parties').upsert(chunks[i]);
+      const { error } = await supabase.from('parties').upsert(chunks[i], { onConflict: 'id' });
       if (error) throw new Error(`Backup parties error: ${error.message}`);
     }
   }
@@ -150,19 +297,26 @@ export async function backupLocalToCloud(
     const chunks = chunkArray(cloudTxns, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading transactions batch ${i + 1}/${chunks.length}...`, 75, 100);
-      const { error } = await supabase.from('transactions').upsert(chunks[i]);
+      const { error } = await supabase.from('transactions').upsert(chunks[i], { onConflict: 'id' });
       if (error) throw new Error(`Backup transactions error: ${error.message}`);
     }
   }
 
   // 5. Upload Transaction Items
-  // IMPORTANT: The ID must be derived from the TRANSACTION UUID + row position,
-  // NOT from the local SQLite integer ID (r.id). Local IDs start at 1 on every
-  // device, so two PCs would generate the same UUID → duplicate key error.
-  // By using txnMap[r.txn_id] + index, the UUID is globally unique per bill line.
   const validTxnItems = localTxnItems.filter(r => txnMap[r.txn_id]);
   if (validTxnItems.length > 0) {
-    // Group by txn_id so row index is relative to each transaction
+    const allCloudTxnIds = [...new Set(validTxnItems.map(r => txnMap[r.txn_id]))];
+
+    const deleteBatches = chunkArray(allCloudTxnIds, 50);
+    for (let i = 0; i < deleteBatches.length; i++) {
+      onProgress(`Clearing old line items batch ${i + 1}/${deleteBatches.length}...`, 78, 100);
+      const { error } = await supabase
+        .from('transaction_items')
+        .delete()
+        .in('txn_id', deleteBatches[i]);
+      if (error) throw new Error(`Backup clear line items error: ${error.message}`);
+    }
+
     const byTxn: Record<string, any[]> = {};
     validTxnItems.forEach(r => {
       const txnUuid = txnMap[r.txn_id];
@@ -174,7 +328,6 @@ export async function backupLocalToCloud(
       const txnUuid = txnMap[r.txn_id];
       const rowIdx = byTxn[txnUuid].indexOf(r);
       return {
-        // Key: stableUUID based on txn UUID + row index — unique across all devices
         id: stableUUID('transaction_items', `${txnUuid}:${rowIdx}`),
         txn_id: txnUuid,
         item_id: r.item_id && itemMap[r.item_id] ? itemMap[r.item_id] : null,
@@ -196,12 +349,12 @@ export async function backupLocalToCloud(
     const chunks = chunkArray(cloudTxnItems, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading transaction items batch ${i + 1}/${chunks.length}...`, 85, 100);
-      const { error } = await supabase.from('transaction_items').upsert(chunks[i], { onConflict: 'id' });
+      const { error } = await supabase.from('transaction_items').insert(chunks[i]);
       if (error) throw new Error(`Backup transaction items error (batch ${i + 1}): ${error.message}`);
     }
   }
 
-  // 6. Upload Special Rates — upload ALL local rates using stableUUID (same as items/parties)
+  // 6. Upload Special Rates
   onProgress('Syncing special rates...', 93, 100);
   const { error: delRatesErr } = await supabase
     .from('party_special_rates')
@@ -210,16 +363,16 @@ export async function backupLocalToCloud(
   if (delRatesErr) throw new Error(`Backup special rates delete error: ${delRatesErr.message}`);
 
   if (localRates.length > 0) {
-    // Use stableUUID for all IDs — same pattern as items and parties upload
-    // We rely on the already-uploaded parties and items to satisfy FK constraints
-    const cloudRates = localRates.map(r => ({
-      id: stableUUID('party_special_rates', r.id),
-      store_id: storeId,
-      party_id: stableUUID('parties', r.party_id),
-      item_id: stableUUID('items', r.item_id),
-      price: r.price ? Number(r.price) : null,
-      discount: r.discount ? Number(r.discount) : null,
-    }));
+    const cloudRates = localRates
+      .filter(r => itemMap[r.item_id] && partyMap[r.party_id])
+      .map(r => ({
+        id: stableUUID('party_special_rates', r.id),
+        store_id: storeId,
+        party_id: partyMap[r.party_id],
+        item_id: itemMap[r.item_id],
+        price: r.price ? Number(r.price) : null,
+        discount: r.discount ? Number(r.discount) : null,
+      }));
 
     console.log(`[Sync] Special rates: uploading ${cloudRates.length} to cloud`);
     const chunks = chunkArray(cloudRates, 100);
@@ -227,7 +380,6 @@ export async function backupLocalToCloud(
       onProgress(`Uploading special rates batch ${i + 1}/${chunks.length}...`, 95, 100);
       const { error } = await supabase.from('party_special_rates').insert(chunks[i]);
       if (error) {
-        // Warn but don't crash if an orphaned rate fails FK constraint
         console.warn(`[Sync] Special rates insert warning: ${error.message}`);
       }
     }
@@ -243,7 +395,6 @@ export async function backupLocalToCloud(
       quantity: Number(r.quantity) || 1,
       status: ['pending', 'ordered', 'received', 'cancelled'].includes(r.status) ? r.status : 'pending',
       ordered_at: r.ordered_at ? new Date(r.ordered_at).toISOString() : null,
-      // Vendor: resolve local integer id -> cloud UUID
       vendor_id: r.vendor_id && partyMap[r.vendor_id] ? partyMap[r.vendor_id] : null,
       vendor_name: r.vendor_name || null,
       vendor_phone: r.vendor_phone || null,
@@ -252,16 +403,14 @@ export async function backupLocalToCloud(
     const chunks = chunkArray(cloudOrders, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading order book batch ${i + 1}/${chunks.length}...`, 97, 100);
-      const { error } = await supabase.from('order_book').upsert(chunks[i]);
+      const { error } = await supabase.from('order_book').upsert(chunks[i], { onConflict: 'id' });
       if (error) throw new Error(`Backup order book error: ${error.message}`);
     }
   }
 
-  // 8. Upload App Settings — upsert so it's safe to run backup multiple times.
-  // NEVER include gemini_api_key — it is device-specific and must stay local.
+  // 8. Upload App Settings
   onProgress('Syncing app settings...', 97, 100);
 
-  // Build a merged map: start from defaults so we always have the show_* keys + fy_start_month,
   // then overlay whatever the user has explicitly saved locally.
   const defaultShowKeys: Record<string, string> = {
     show_mrp: 'true', show_stock: 'true', show_batch: 'true',
