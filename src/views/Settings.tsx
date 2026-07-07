@@ -6,7 +6,8 @@ import { getLocalStats } from '@/lib/db';
 import {
   Settings2, Database, Info, Share2, Key, Link as LinkIcon,
   LayoutGrid, Save, CheckCircle, Cloud, CloudUpload, CloudDownload,
-  RefreshCw, AlertTriangle, Loader2, CheckCircle2, HardDrive
+  RefreshCw, AlertTriangle, Loader2, CheckCircle2, HardDrive, FileDown, FileUp,
+  AlertCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/AuthContext';
@@ -75,6 +76,14 @@ export default function Settings() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
   const [syncPct, setSyncPct] = useState(0);
+
+  // Excel export state
+  const [exporting, setExporting] = useState(false);
+
+  // Excel import state
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState('');
+  const [importResult, setImportResult] = useState<{items:number;parties:number;transactions:number;txnItems:number;orders:number} | null>(null);
 
   useEffect(() => {
     loadSettings();
@@ -199,6 +208,312 @@ export default function Settings() {
       setStatsLoading(false);
     }
   }, [activeStore]);
+
+  const handleExportExcel = async () => {
+    setExporting(true);
+    try {
+      const XLSX = await import('xlsx');
+      const db = await getDB();
+
+      // Fetch all data
+      const items = await db.select<any[]>('SELECT * FROM items ORDER BY name');
+      const parties = await db.select<any[]>('SELECT * FROM parties ORDER BY name');
+      const transactions = await db.select<any[]>(
+        `SELECT t.*, p.name as party_name FROM transactions t
+         LEFT JOIN parties p ON p.id = t.party_id
+         ORDER BY t.date DESC`
+      );
+      const txnItems = await db.select<any[]>(
+        `SELECT ti.*, t.invoice_no, t.date, t.type, p.name as party_name
+         FROM transaction_items ti
+         LEFT JOIN transactions t ON t.id = ti.txn_id
+         LEFT JOIN parties p ON p.id = t.party_id
+         ORDER BY t.date DESC`
+      );
+      const orders = await db.select<any[]>(
+        `SELECT ob.*, p.name as vendor_party_name
+         FROM order_book ob
+         LEFT JOIN parties p ON p.id = ob.vendor_id
+         ORDER BY ob.ordered_at DESC`
+      );
+
+      const wb = XLSX.utils.book_new();
+
+      // Sheet 1: Items (Inventory)
+      const itemsSheet = XLSX.utils.json_to_sheet(items.map(r => ({
+        'Item Name': r.name,
+        'HSN Code': r.hsn || '',
+        'Category': r.category || '',
+        'Unit': r.unit || '',
+        'Sale Price (₹)': Number(r.sale_price) || 0,
+        'Purchase Price (₹)': Number(r.purchase_price) || 0,
+        'Current Stock': Number(r.current_stock) || 0,
+        'Min Stock': Number(r.min_stock) || 0,
+        'Opening Stock': Number(r.opening_stock) || 0,
+        'Tax Rate (%)': Number(r.tax_rate) || 0,
+        'Discount (%)': Number(r.discount) || 0,
+        'Inclusive Tax': r.inclusive_tax ? 'Yes' : 'No',
+        'Tabs/Strip': Number(r.tabs_per_strip) || '',
+        'Strips/Box': Number(r.strips_per_box) || '',
+      })));
+      XLSX.utils.book_append_sheet(wb, itemsSheet, 'Items (Inventory)');
+
+      // Sheet 2: Parties (Customers & Vendors)
+      const partiesSheet = XLSX.utils.json_to_sheet(parties.map(r => ({
+        'Name': r.name,
+        'Type': r.type,
+        'Phone': r.phone || '',
+        'GSTIN': r.gstin || '',
+        'Address': r.address || '',
+        'Opening Balance (₹)': Number(r.opening_balance) || 0,
+      })));
+      XLSX.utils.book_append_sheet(wb, partiesSheet, 'Parties');
+
+      // Sheet 3: Transactions (Summary)
+      const txnsSheet = XLSX.utils.json_to_sheet(transactions.map(r => ({
+        'Date': r.date || '',
+        'Invoice No': r.invoice_no || '',
+        'Type': r.type,
+        'Party Name': r.party_name || '',
+        'Total Amount (₹)': Number(r.total_amount) || 0,
+        'Paid Amount (₹)': Number(r.paid_amount) || 0,
+        'Balance Due (₹)': Number(r.balance_due) || 0,
+        'Payment Type': r.payment_type || '',
+        'Status': r.status || '',
+        'Challan No': r.challan_no || '',
+        'Description': r.description || '',
+      })));
+      XLSX.utils.book_append_sheet(wb, txnsSheet, 'Transactions');
+
+      // Sheet 4: Transaction Line Items (Detailed)
+      const txnItemsSheet = XLSX.utils.json_to_sheet(txnItems.map(r => ({
+        'Date': r.date || '',
+        'Invoice No': r.invoice_no || '',
+        'Type': r.type || '',
+        'Party Name': r.party_name || '',
+        'Item Name': r.item_name || '',
+        'Quantity': Number(r.quantity) || 0,
+        'Unit': r.unit || '',
+        'Price (₹)': Number(r.price) || 0,
+        'Discount (%)': Number(r.discount_pct) || 0,
+        'Tax (%)': Number(r.tax_pct) || 0,
+        'Amount (₹)': Number(r.amount) || 0,
+        'Batch No': r.batch_no || '',
+        'Expiry Date': r.expiry_date || '',
+      })));
+      XLSX.utils.book_append_sheet(wb, txnItemsSheet, 'Transaction Items');
+
+      // Sheet 5: Order Book
+      if (orders.length > 0) {
+        const ordersSheet = XLSX.utils.json_to_sheet(orders.map(r => ({
+          'Item Name': r.item_name || '',
+          'Quantity': Number(r.quantity) || 1,
+          'Status': r.status || '',
+          'Vendor Name': r.vendor_name || r.vendor_party_name || '',
+          'Vendor Phone': r.vendor_phone || '',
+          'Ordered At': r.ordered_at || '',
+        })));
+        XLSX.utils.book_append_sheet(wb, ordersSheet, 'Order Book');
+      }
+
+      // Generate and download file
+      const storeName = activeStore?.name?.replace(/[^a-z0-9]/gi, '_') || 'MediFlow';
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const fileName = `${storeName}_export_${dateStr}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+
+      alert(`✅ Excel export downloaded successfully!\n\nFile: ${fileName}\nSheets: Items, Parties, Transactions, Transaction Items${orders.length > 0 ? ', Order Book' : ''}`);
+    } catch (e: any) {
+      console.error(e);
+      alert('❌ Error exporting to Excel: ' + e.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleImportExcel = async (file: File) => {
+    setImporting(true);
+    setImportMsg('Reading Excel file...');
+    setImportResult(null);
+    try {
+      const XLSX = await import('xlsx');
+      const db = await getDB();
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array' });
+
+      let importedItems = 0, importedParties = 0, importedTxns = 0, importedTxnItems = 0, importedOrders = 0;
+
+      // ── Sheet 1: Items ────────────────────────────────────────────
+      const itemSheet = wb.Sheets['Items (Inventory)'] || wb.Sheets['Items'];
+      if (itemSheet) {
+        setImportMsg('Importing items...');
+        const rows = XLSX.utils.sheet_to_json<any>(itemSheet);
+        for (const r of rows) {
+          const name = (r['Item Name'] || '').toString().trim();
+          if (!name) continue;
+          await db.execute(
+            `INSERT INTO items (name, hsn, category, unit, sale_price, purchase_price, current_stock, min_stock, opening_stock, tax_rate, discount, inclusive_tax, tabs_per_strip, strips_per_box)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+             ON CONFLICT(name) DO UPDATE SET
+               hsn=excluded.hsn, category=excluded.category, unit=excluded.unit,
+               sale_price=excluded.sale_price, purchase_price=excluded.purchase_price,
+               current_stock=excluded.current_stock, min_stock=excluded.min_stock,
+               opening_stock=excluded.opening_stock, tax_rate=excluded.tax_rate,
+               discount=excluded.discount, inclusive_tax=excluded.inclusive_tax,
+               tabs_per_strip=excluded.tabs_per_strip, strips_per_box=excluded.strips_per_box`,
+            [
+              name,
+              r['HSN Code'] || '',
+              r['Category'] || '',
+              r['Unit'] || 'TAB',
+              Number(r['Sale Price (₹)']) || 0,
+              Number(r['Purchase Price (₹)']) || 0,
+              Number(r['Current Stock']) || 0,
+              Number(r['Min Stock']) || 0,
+              Number(r['Opening Stock']) || 0,
+              Number(r['Tax Rate (%)']) || 0,
+              Number(r['Discount (%)']) || 0,
+              (r['Inclusive Tax'] || '').toLowerCase() === 'yes' ? 1 : 0,
+              Number(r['Tabs/Strip']) || 10,
+              Number(r['Strips/Box']) || 10,
+            ]
+          );
+          importedItems++;
+        }
+      }
+
+      // ── Sheet 2: Parties ──────────────────────────────────────────
+      const partySheet = wb.Sheets['Parties'];
+      if (partySheet) {
+        setImportMsg('Importing parties...');
+        const rows = XLSX.utils.sheet_to_json<any>(partySheet);
+        for (const r of rows) {
+          const name = (r['Name'] || '').toString().trim();
+          if (!name) continue;
+          const type = ['customer','vendor'].includes((r['Type']||'').toLowerCase()) ? (r['Type']||'').toLowerCase() : 'customer';
+          await db.execute(
+            `INSERT INTO parties (name, type, phone, gstin, address, opening_balance)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT(name) DO UPDATE SET
+               type=excluded.type, phone=excluded.phone, gstin=excluded.gstin,
+               address=excluded.address, opening_balance=excluded.opening_balance`,
+            [name, type, r['Phone']||'', r['GSTIN']||'', r['Address']||'', Number(r['Opening Balance (₹)'])||0]
+          );
+          importedParties++;
+        }
+      }
+
+      // ── Sheet 3: Transactions ─────────────────────────────────────
+      const txnSheet = wb.Sheets['Transactions'];
+      if (txnSheet) {
+        setImportMsg('Importing transactions...');
+        const rows = XLSX.utils.sheet_to_json<any>(txnSheet);
+        for (const r of rows) {
+          const invoiceNo = (r['Invoice No'] || '').toString().trim();
+          const type = (r['Type'] || '').toLowerCase();
+          if (!invoiceNo || !['sale','purchase'].includes(type)) continue;
+
+          // Resolve party id
+          let partyId: number | null = null;
+          const partyName = (r['Party Name'] || '').toString().trim();
+          if (partyName) {
+            const pRes = await db.select<{id:number}[]>(`SELECT id FROM parties WHERE name = $1 LIMIT 1`, [partyName]);
+            if (pRes.length) partyId = pRes[0].id;
+          }
+
+          const existing = await db.select<{id:number}[]>(`SELECT id FROM transactions WHERE invoice_no = $1 AND type = $2 LIMIT 1`, [invoiceNo, type]);
+          if (existing.length) continue; // skip duplicates
+
+          const paymentType = ['cash','credit','upi','cheque','bank'].includes((r['Payment Type']||'').toLowerCase()) ? r['Payment Type'].toLowerCase() : 'cash';
+          const status = ['paid','partial','unpaid'].includes((r['Status']||'').toLowerCase()) ? r['Status'].toLowerCase() : 'paid';
+          await db.execute(
+            `INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [
+              invoiceNo,
+              r['Date'] || new Date().toISOString().slice(0,10),
+              partyId,
+              Number(r['Total Amount (₹)'])||0,
+              Number(r['Paid Amount (₹)'])||0,
+              Number(r['Balance Due (₹)'])||0,
+              type, paymentType, status,
+              r['Challan No']||'',
+              r['Description']||'',
+            ]
+          );
+          importedTxns++;
+        }
+      }
+
+      // ── Sheet 4: Transaction Items ────────────────────────────────
+      const txnItemSheet = wb.Sheets['Transaction Items'];
+      if (txnItemSheet) {
+        setImportMsg('Importing transaction line items...');
+        const rows = XLSX.utils.sheet_to_json<any>(txnItemSheet);
+        for (const r of rows) {
+          const invoiceNo = (r['Invoice No']||'').toString().trim();
+          const type = (r['Type']||'').toLowerCase();
+          if (!invoiceNo) continue;
+          const txnRes = await db.select<{id:number}[]>(`SELECT id FROM transactions WHERE invoice_no=$1 AND type=$2 LIMIT 1`, [invoiceNo, type]);
+          if (!txnRes.length) continue;
+          const txnId = txnRes[0].id;
+          // Resolve item id
+          let itemId: number | null = null;
+          const itemName = (r['Item Name']||'').toString().trim();
+          if (itemName) {
+            const iRes = await db.select<{id:number}[]>(`SELECT id FROM items WHERE name=$1 LIMIT 1`,[itemName]);
+            if (iRes.length) itemId = iRes[0].id;
+          }
+          await db.execute(
+            `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, tax_pct, amount, batch_no, expiry_date)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [
+              txnId, itemId, itemName,
+              Number(r['Quantity'])||0,
+              r['Unit']||'',
+              Number(r['Price (₹)'])||0,
+              Number(r['Discount (%)'])||0,
+              Number(r['Tax (%)'])||0,
+              Number(r['Amount (₹)'])||0,
+              r['Batch No']||'',
+              r['Expiry Date']||'',
+            ]
+          );
+          importedTxnItems++;
+        }
+      }
+
+      // ── Sheet 5: Order Book ───────────────────────────────────────
+      const orderSheet = wb.Sheets['Order Book'];
+      if (orderSheet) {
+        setImportMsg('Importing order book...');
+        const rows = XLSX.utils.sheet_to_json<any>(orderSheet);
+        for (const r of rows) {
+          const itemName = (r['Item Name']||'').toString().trim();
+          if (!itemName) continue;
+          let itemId: number | null = null;
+          const iRes = await db.select<{id:number}[]>(`SELECT id FROM items WHERE name=$1 LIMIT 1`,[itemName]);
+          if (iRes.length) itemId = iRes[0].id;
+          const status = ['pending','ordered','received','cancelled'].includes((r['Status']||'').toLowerCase()) ? r['Status'].toLowerCase() : 'pending';
+          await db.execute(
+            `INSERT INTO order_book (item_name, item_id, quantity, status, vendor_name, vendor_phone, ordered_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [itemName, itemId, Number(r['Quantity'])||1, status, r['Vendor Name']||'', r['Vendor Phone']||'', r['Ordered At']||null]
+          );
+          importedOrders++;
+        }
+      }
+
+      setImportResult({ items: importedItems, parties: importedParties, transactions: importedTxns, txnItems: importedTxnItems, orders: importedOrders });
+      setImportMsg('');
+      handleRefreshStats();
+    } catch (e: any) {
+      console.error(e);
+      setImportMsg('❌ Import failed: ' + e.message);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const handleCloudBackup = async () => {
     if (!activeStore) return;
@@ -707,9 +1022,75 @@ export default function Settings() {
                       Restore from Backup
                     </button>
                   </div>
+
+                  {/* Excel Export Card */}
+                  <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/30 flex flex-col justify-between hover:border-emerald-300 hover:bg-emerald-50/60 transition-colors md:col-span-2">
+                    <div className="space-y-1">
+                      <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                        <FileDown size={16} className="text-emerald-600" />
+                        Export Local Data to Excel
+                        <span className="ml-1 text-[10px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full">NEW</span>
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Export all your local data (items, parties, transactions, order book) into a multi-sheet Excel workbook (.xlsx) — works fully offline, no internet required.
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleExportExcel}
+                      disabled={exporting || syncing}
+                      className="mt-4 w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg text-sm transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {exporting ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
+                      {exporting ? 'Exporting...' : 'Export to Excel (.xlsx)'}
+                    </button>
+                  </div>
+
+                  {/* Excel Import Card */}
+                  <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/30 flex flex-col justify-between hover:border-blue-300 hover:bg-blue-50/60 transition-colors md:col-span-2">
+                    <div className="space-y-1">
+                      <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                        <FileUp size={16} className="text-blue-600" />
+                        Import Data from Excel
+                        <span className="ml-1 text-[10px] font-bold uppercase tracking-wider text-blue-600 bg-blue-100 px-2 py-0.5 rounded-full">NEW</span>
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Upload a <strong>.xlsx</strong> exported from this app to import items, parties, transactions, and order book. Duplicate invoices are skipped automatically.
+                      </p>
+                    </div>
+                    {importing && (
+                      <div className="mt-3 p-3 bg-blue-50 border border-blue-100 rounded-lg flex items-center gap-2 text-xs text-blue-700 font-medium">
+                        <Loader2 size={13} className="animate-spin flex-shrink-0" /> {importMsg}
+                      </div>
+                    )}
+                    {!importing && importMsg && importMsg.startsWith('❌') && (
+                      <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-lg flex items-start gap-2 text-xs text-red-700">
+                        <AlertCircle size={13} className="flex-shrink-0 mt-0.5" /> {importMsg}
+                      </div>
+                    )}
+                    {importResult && (
+                      <div className="mt-3 p-3 bg-emerald-50 border border-emerald-100 rounded-lg">
+                        <p className="text-xs font-bold text-emerald-700 mb-2 flex items-center gap-1"><CheckCircle size={13} /> Import Completed!</p>
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                          {([{l:'Items',v:importResult.items},{l:'Parties',v:importResult.parties},{l:'Transactions',v:importResult.transactions},{l:'Line Items',v:importResult.txnItems},{l:'Orders',v:importResult.orders}] as {l:string;v:number}[]).map(({l,v}) => (
+                            <div key={l} className="text-center bg-white rounded-lg py-2 border border-emerald-100">
+                              <p className="text-lg font-extrabold text-emerald-600">{v}</p>
+                              <p className="text-[10px] text-slate-500 font-medium">{l}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <label className={`mt-4 w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-sm transition-all shadow-sm cursor-pointer ${importing || syncing ? 'opacity-50 pointer-events-none' : ''}`}>
+                      {importing ? <Loader2 size={14} className="animate-spin" /> : <FileUp size={14} />}
+                      {importing ? 'Importing...' : 'Choose Excel File to Import'}
+                      <input type="file" accept=".xlsx,.xls" className="hidden" disabled={importing || syncing}
+                        onChange={e => { const file = e.target.files?.[0]; if (file) { setImportResult(null); handleImportExcel(file); } e.target.value = ''; }} />
+                    </label>
+                  </div>
                 </div>
               </div>
             </div>
+            
 
             {/* Stats Comparison */}
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
@@ -802,12 +1183,31 @@ export default function Settings() {
                       try {
                         setStatus('Wiping cloud database...');
                         const storeId = activeStore.id;
-                        const tables = ['party_special_rates', 'order_book', 'transactions', 'parties', 'items'];
-                        for (const table of tables) {
-                          const { error } = await supabase
-                            .from(table)
-                            .delete()
-                            .eq('store_id', storeId);
+
+                        // Step 1: Get all transaction IDs for this store (transaction_items has no store_id)
+                        const txnIds: string[] = [];
+                        let from = 0;
+                        while (true) {
+                          const { data } = await supabase.from('transactions').select('id').eq('store_id', storeId).range(from, from + 999);
+                          if (!data || data.length === 0) break;
+                          txnIds.push(...data.map((r: any) => r.id));
+                          if (data.length < 1000) break;
+                          from += 1000;
+                        }
+
+                        // Step 2: Delete transaction_items first (child of transactions)
+                        if (txnIds.length > 0) {
+                          const chunks: string[][] = [];
+                          for (let i = 0; i < txnIds.length; i += 50) chunks.push(txnIds.slice(i, i + 50));
+                          for (const chunk of chunks) {
+                            const { error } = await supabase.from('transaction_items').delete().in('txn_id', chunk);
+                            if (error) throw error;
+                          }
+                        }
+
+                        // Step 3: Delete all other tables in dependency order
+                        for (const table of ['party_special_rates', 'order_book', 'transactions', 'items', 'parties', 'app_settings']) {
+                          const { error } = await supabase.from(table).delete().eq('store_id', storeId);
                           if (error) throw error;
                         }
                         alert('Successfully wiped all cloud database tables for this store!');

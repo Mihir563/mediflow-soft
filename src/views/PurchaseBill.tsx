@@ -9,6 +9,8 @@ import BatchModal from '@/components/BatchModal';
 import { AppSettings, defaultSettings, getFyStartMonth, getFyBounds } from '@/views/Settings';
 import SmartDateInput from '@/components/SmartDateInput';
 import SmartExpiryInput from '@/components/SmartExpiryInput';
+import { useAuth } from '@/lib/AuthContext';
+import { syncTransactionToCloud } from '@/lib/supabaseSyncHelper';
 
 interface VendorOption {
   id: number;
@@ -87,6 +89,7 @@ const formatExpiryInput = (value: string) => {
 
 export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange }: { editTxnId?: number | null; onSaved?: () => void; tabId?: string; onLabelChange?: (label: string, isDirty: boolean) => void } = {}) {
   const DRAFT_KEY = getDraftKey(tabId);
+  const { activeStore, isOnline } = useAuth();
   const [vendor, setVendor] = useState<VendorOption | null>(null);
   const [vendorSearch, setVendorSearch] = useState('');
   const [vendorResults, setVendorResults] = useState<VendorOption[]>([]);
@@ -528,6 +531,10 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
         setIsEditMode(false);
         setEditTxnDbId(null);
         if (onSaved) onSaved();
+        // 🔄 Fire-and-forget real-time cloud sync
+        if (activeStore?.id && isOnline) {
+          syncTransactionToCloud(activeStore.id, editTxnDbId).catch(() => {});
+        }
 
       } else {
         // === NEW MODE: Insert new transaction ===
@@ -571,6 +578,10 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
           );
         }
         setStatus(`✅ Purchase ${billNo} saved!`);
+        // 🔄 Fire-and-forget real-time cloud sync
+        if (activeStore?.id && isOnline) {
+          syncTransactionToCloud(activeStore.id, txnId).catch(() => {});
+        }
       }
 
       // Clear draft on successful save

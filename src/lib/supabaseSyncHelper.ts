@@ -1,17 +1,7 @@
 import { supabase } from './supabase';
 import { getDB } from './db';
 
-// Tables we synchronize
-const TABLES_TO_SYNC = [
-  'items',
-  'parties',
-  'transactions',
-  'transaction_items',
-  'party_special_rates',
-] as const;
-
 // Stable, deterministic UUID generation based on table name and old integer ID.
-// This prevents duplicates and ensures that foreign keys align perfectly across uploads.
 function stableUUID(table: string, oldId: number | string): string {
   let h = 5381;
   const s = `${table}:${oldId}`;
@@ -21,22 +11,163 @@ function stableUUID(table: string, oldId: number | string): string {
   const h3 = Math.abs(h2 * 22695477 + 1);
   const h4 = Math.abs(h3 * 1103515245 + 12345);
   const h5 = Math.abs(h4 * 1234567891 + 99);
-  
   const toHex = (n: number, len: number) => Math.abs(n).toString(16).padStart(len, '0').slice(-len);
   return `${toHex(h, 8)}-${toHex(h2, 4)}-4${toHex(h3, 3)}-${(8 + (h4 % 4)).toString(16)}${toHex(h5, 3)}-${toHex(h * h2, 12)}`;
 }
 
-// Helper to batch rows
 function chunkArray<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) {
-    chunks.push(arr.slice(i, i + size));
-  }
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
   return chunks;
 }
 
 /**
+ * ── REAL-TIME SYNC: Push a single transaction to cloud immediately after save ──
+ *
+ * Called fire-and-forget after every sale/purchase save.
+ * Uses upsert on stable UUIDs so it's safe to call multiple times.
+ * Silently fails on network errors — data is always safe locally.
+ */
+export async function syncTransactionToCloud(
+  storeId: string,
+  localTxnId: number
+): Promise<void> {
+  try {
+    const db = await getDB();
+
+    // 1. Load the transaction
+    const txns = await db.select<any[]>(
+      `SELECT * FROM transactions WHERE id = $1`, [localTxnId]
+    );
+    if (!txns.length) return;
+    const t = txns[0];
+    const txnUUID = stableUUID('transactions', localTxnId);
+
+    // 2. Resolve or upsert the party
+    let partyUUID: string | null = null;
+    if (t.party_id) {
+      const parties = await db.select<any[]>(`SELECT * FROM parties WHERE id = $1`, [t.party_id]);
+      if (parties.length) {
+        const p = parties[0];
+        partyUUID = stableUUID('parties', p.id);
+        await supabase.from('parties').upsert({
+          id: partyUUID,
+          store_id: storeId,
+          name: p.name,
+          phone: p.phone || null,
+          gstin: p.gstin || null,
+          address: p.address || null,
+          type: ['customer', 'vendor'].includes(p.type) ? p.type : 'customer',
+          opening_balance: Number(p.opening_balance) || 0,
+          is_active: true,
+        }, { onConflict: 'id' });
+      }
+    }
+
+    // 3. Upsert the transaction
+    await supabase.from('transactions').upsert({
+      id: txnUUID,
+      store_id: storeId,
+      invoice_no: t.invoice_no || null,
+      date: t.date ? new Date(t.date).toISOString() : new Date().toISOString(),
+      party_id: partyUUID,
+      total_amount: Number(t.total_amount) || 0,
+      paid_amount: Number(t.paid_amount) || 0,
+      balance_due: Number(t.balance_due) || 0,
+      type: t.type,
+      payment_type: ['cash', 'credit', 'upi', 'cheque', 'bank'].includes(t.payment_type) ? t.payment_type : 'cash',
+      status: ['paid', 'partial', 'unpaid'].includes(t.status) ? t.status : 'paid',
+      challan_no: t.challan_no || null,
+      description: t.description || null,
+    }, { onConflict: 'id' });
+
+    // 4. Load and upsert transaction items
+    const txnItems = await db.select<any[]>(
+      `SELECT * FROM transaction_items WHERE txn_id = $1`, [localTxnId]
+    );
+
+    if (txnItems.length > 0) {
+      // First, delete old cloud line items for this transaction (re-upsert all)
+      await supabase.from('transaction_items').delete().eq('txn_id', txnUUID);
+
+      // Build UUID map for items
+      const itemIds = [...new Set(txnItems.map(r => r.item_id).filter(Boolean))];
+      const itemUUIDMap: Record<number, string> = {};
+      for (const itemId of itemIds) {
+        itemUUIDMap[itemId] = stableUUID('items', itemId);
+      }
+
+      // Upsert items (stock levels + prices) if they've changed
+      if (itemIds.length > 0) {
+        const localItems = await db.select<any[]>(
+          `SELECT * FROM items WHERE id IN (${itemIds.join(',')})`
+        );
+        for (const item of localItems) {
+          await supabase.from('items').upsert({
+            id: itemUUIDMap[item.id],
+            store_id: storeId,
+            name: item.name,
+            hsn: item.hsn || null,
+            unit: item.unit || 'TAB',
+            sale_price: Number(item.sale_price) || 0,
+            purchase_price: Number(item.purchase_price) || 0,
+            opening_stock: Number(item.opening_stock) || 0,
+            current_stock: Number(item.current_stock) || 0,
+            min_stock: Number(item.min_stock) || 0,
+            category: item.category || null,
+            tax_rate: Number(item.tax_rate) || 0,
+            discount: Number(item.discount) || 0,
+            inclusive_tax: item.inclusive_tax === 1 || item.inclusive_tax === true,
+            tabs_per_strip: Number(item.tabs_per_strip) || 10,
+            strips_per_box: Number(item.strips_per_box) || 10,
+            is_active: true,
+          }, { onConflict: 'id' });
+        }
+      }
+
+      // Now insert transaction_items
+      const cloudItems = txnItems.map((r, idx) => ({
+        id: stableUUID('transaction_items', `${txnUUID}:${idx}`),
+        txn_id: txnUUID,
+        item_id: r.item_id && itemUUIDMap[r.item_id] ? itemUUIDMap[r.item_id] : null,
+        item_name: r.item_name || null,
+        quantity: Number(r.quantity) || 0,
+        unit: r.unit || null,
+        price: Number(r.price) || 0,
+        amount: Number(r.amount) || 0,
+        discount_pct: Number(r.discount_pct) || 0,
+        discount_amt: Number(r.discount_amt) || 0,
+        tax_pct: Number(r.tax_pct) || 0,
+        tax_amt: Number(r.tax_amt) || 0,
+        scheme_amount: Number(r.scheme_amount) || 0,
+        batch_no: r.batch_no || null,
+        expiry_date: r.expiry_date || null,
+      }));
+
+      for (const chunk of chunkArray(cloudItems, 50)) {
+        await supabase.from('transaction_items').insert(chunk);
+      }
+    }
+  } catch (err) {
+    // Never block the UI — log silently
+    console.warn('[CloudSync] Real-time sync failed (data safe locally):', err);
+  }
+}
+
+
+/**
  * ── BACKUP: Local SQLite ──> Supabase Cloud ──────────────────────────────────
+ *
+ * Strategy: DELETE existing cloud data for this store, then UPSERT fresh.
+ *
+ * Why upsert instead of insert?
+ *   The cloud has secondary UNIQUE constraints (store_id+name on items/parties).
+ *   We use UPSERT (onConflict: 'id') so that re-runs of backup are idempotent.
+ *   We still DELETE first to clean up stale rows not present locally anymore.
+ *
+ * Upload order (respects FK dependencies):
+ *   items (no default_vendor_id yet) → parties → back-fill items.default_vendor_id
+ *   → transactions → transaction_items → special_rates → order_book → app_settings
  */
 export async function backupLocalToCloud(
   storeId: string,
@@ -44,217 +175,117 @@ export async function backupLocalToCloud(
 ): Promise<void> {
   const db = await getDB();
 
-  // 1. Fetch all local SQLite data
-  onProgress('Reading local items...', 0, 100);
-  const localItems = await db.select<any[]>('SELECT * FROM items');
-  
-  onProgress('Reading local parties...', 10, 100);
-  const localParties = await db.select<any[]>('SELECT * FROM parties');
-  
-  onProgress('Reading local transactions...', 20, 100);
-  const localTxns = await db.select<any[]>('SELECT * FROM transactions');
-  
-  onProgress('Reading local line items...', 30, 100);
+  // ── 1. Read all local data ─────────────────────────────────────────────────
+  onProgress('Reading local data...', 0, 100);
+  const localItems    = await db.select<any[]>('SELECT * FROM items');
+  const localParties  = await db.select<any[]>('SELECT * FROM parties');
+  const localTxns     = await db.select<any[]>('SELECT * FROM transactions');
   const localTxnItems = await db.select<any[]>('SELECT * FROM transaction_items');
-  
-  onProgress('Reading local special rates...', 35, 100);
-  const localRates = await db.select<any[]>('SELECT * FROM party_special_rates');
-
-  onProgress('Reading local order book...', 40, 100);
-  const localOrders = await db.select<any[]>('SELECT * FROM order_book');
-
-  onProgress('Reading local app settings...', 42, 100);
+  const localRates    = await db.select<any[]>('SELECT * FROM party_special_rates');
+  const localOrders   = await db.select<any[]>('SELECT * FROM order_book');
   const localSettings = await db.select<any[]>('SELECT * FROM app_settings');
 
-  // ── Build initial stable ID maps (fallback for purely offline data) ─────────
-  const itemMap: Record<number, string> = {};
+  // ── 2. Build stable UUID maps ──────────────────────────────────────────────
+  const itemMap:  Record<number, string> = {};
   const partyMap: Record<number, string> = {};
-  const txnMap: Record<number, string> = {};
-
-  localItems.forEach(r => { itemMap[r.id] = stableUUID('items', r.id); });
+  const txnMap:   Record<number, string> = {};
+  localItems.forEach(r   => { itemMap[r.id]  = stableUUID('items', r.id); });
   localParties.forEach(r => { partyMap[r.id] = stableUUID('parties', r.id); });
-  localTxns.forEach(r => { txnMap[r.id] = stableUUID('transactions', r.id); });
+  localTxns.forEach(r    => { txnMap[r.id]   = stableUUID('transactions', r.id); });
 
-  // ── Pre-fetch existing cloud records to resolve UUID conflicts ──────────────
-  //
-  // CRITICAL: When a device is used in online mode, its transactions, items, and
-  // parties are already stored in Supabase with cloud-generated random UUIDs.
-  // If backup generates stableUUIDs from local integer IDs (different UUIDs),
-  // upsert would try to INSERT duplicates → unique constraint violation on
-  // (store_id, invoice_no, type).
-  //
-  // We pre-fetch all existing cloud records and match them to local records by
-  // natural keys so backup always updates-in-place for already-synced data.
-  //
-  // IMPORTANT: Supabase silently caps all queries at 1000 rows by default.
-  // We must paginate to guarantee we see every record for large stores.
+  // ── 3. Delete ALL existing cloud data (children first, then parents) ───────
+  onProgress('Clearing existing cloud data...', 5, 100);
 
-  onProgress('Checking existing cloud data...', 43, 100);
-
-  // Paginated fetch — loops until all rows are received
-  async function fetchAllCloud<T = any>(
-    table: string,
-    select: string,
-    storeIdFilter: string,
-    pageSize = 1000
-  ): Promise<T[]> {
-    const all: T[] = [];
-    let from = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from(table)
-        .select(select)
-        .eq('store_id', storeIdFilter)
-        .range(from, from + pageSize - 1);
-      if (error) {
-        console.warn(`[Backup] fetchAllCloud(${table}) error:`, error.message);
-        break;
-      }
-      if (!data || data.length === 0) break;
-      all.push(...(data as T[]));
-      if (data.length < pageSize) break; // Last page — we're done
-      from += pageSize;
+  // transaction_items has no store_id — must fetch parent transaction IDs first
+  const existingTxnIds: string[] = [];
+  let txnFrom = 0;
+  while (true) {
+    const { data } = await supabase
+      .from('transactions').select('id').eq('store_id', storeId)
+      .range(txnFrom, txnFrom + 999);
+    if (!data || data.length === 0) break;
+    existingTxnIds.push(...data.map((r: any) => r.id));
+    if (data.length < 1000) break;
+    txnFrom += 1000;
+  }
+  if (existingTxnIds.length > 0) {
+    for (const batch of chunkArray(existingTxnIds, 50)) {
+      const { error } = await supabase.from('transaction_items').delete().in('txn_id', batch);
+      if (error) console.warn('[Backup] transaction_items delete warning:', error.message);
     }
-    return all;
   }
 
-  const [existingCloudItems, existingCloudParties, existingCloudTxns] = await Promise.all([
-    fetchAllCloud('items',        'id, name',                      storeId),
-    fetchAllCloud('parties',      'id, name, phone',               storeId),
-    fetchAllCloud('transactions', 'id, invoice_no, type, date, total_amount', storeId),
-  ]);
+  onProgress('Clearing cloud records...', 8, 100);
+  // Delete in dependency order: child tables first, then parent tables
+  await supabase.from('party_special_rates').delete().eq('store_id', storeId);
+  await supabase.from('order_book').delete().eq('store_id', storeId);
+  await supabase.from('transactions').delete().eq('store_id', storeId);
+  // Now safe to delete parents
+  await supabase.from('items').delete().eq('store_id', storeId);
+  await supabase.from('parties').delete().eq('store_id', storeId);
+  await supabase.from('app_settings').delete().eq('store_id', storeId);
 
-  // Build natural-key → cloud UUID lookup maps
-  const cloudItemByName: Record<string, string> = {};
-  existingCloudItems.forEach((r: any) => {
-    if (r.name) cloudItemByName[r.name.trim().toLowerCase()] = r.id;
-  });
+  // Small delay to ensure Supabase propagates the deletes before re-inserting
+  await new Promise(resolve => setTimeout(resolve, 500));
 
-  const cloudPartyByName: Record<string, string> = {};
-  existingCloudParties.forEach((r: any) => {
-    if (r.name) cloudPartyByName[r.name.trim().toLowerCase()] = r.id;
-  });
+  onProgress('Cloud cleared. Uploading...', 12, 100);
 
-  // Primary match: invoice_no + type (most reliable for numbered bills)
-  const cloudTxnByKey: Record<string, string> = {};
-  // Secondary match: date + total_amount + type (fallback for NULL invoice_no / walk-in sales)
-  // Uses an ARRAY of cloud IDs per fingerprint so that multiple walk-in sales with the
-  // same date+amount each get a distinct cloud UUID consumed one-by-one.
-  const cloudTxnByFingerprint: Record<string, string[]> = {};
-  existingCloudTxns.forEach((r: any) => {
-    if (r.invoice_no) {
-      cloudTxnByKey[`${r.invoice_no}|${r.type}`] = r.id;
-    } else {
-      // Build fingerprint from date + amount + type + created_at for maximum precision
-      const dateKey = r.date ? String(r.date).split('T')[0] : '_';
-      const amtKey  = r.total_amount != null ? Number(r.total_amount).toFixed(2) : '_';
-      const fp = `${dateKey}|${amtKey}|${r.type}`;
-      if (!cloudTxnByFingerprint[fp]) cloudTxnByFingerprint[fp] = [];
-      cloudTxnByFingerprint[fp].push(r.id);
+  // ── 4. Detect optional migrated columns ───────────────────────────────────
+  // items.default_vendor_id and order_book.vendor_* were added in
+  // migrate_vendor_tracking.sql. Customers who haven't run that migration
+  // will get a schema cache error. We detect and skip gracefully.
+  let hasItemVendorCol = true;
+  {
+    const { error } = await supabase.from('items').select('default_vendor_id').eq('store_id', storeId).limit(1);
+    if (error && error.message.includes('schema cache')) {
+      console.warn('[Backup] items.default_vendor_id not in schema — skipping');
+      hasItemVendorCol = false;
     }
-  });
+  }
 
-  // Track consumed cloud UUIDs to prevent two local records mapping to the same cloud row
-  const consumedCloudIds = new Set<string>();
-
-  // Override stableUUID maps with existing cloud UUIDs where a match is found
-  localItems.forEach(r => {
-    const cloudId = r.name ? cloudItemByName[r.name.trim().toLowerCase()] : null;
-    if (cloudId) itemMap[r.id] = cloudId;
-  });
-
-  localParties.forEach(r => {
-    const cloudId = r.name ? cloudPartyByName[r.name.trim().toLowerCase()] : null;
-    if (cloudId) partyMap[r.id] = cloudId;
-  });
-
-  localTxns.forEach(r => {
-    if (r.invoice_no) {
-      // Primary match by invoice number
-      const cloudId = cloudTxnByKey[`${r.invoice_no}|${r.type}`];
-      if (cloudId && !consumedCloudIds.has(cloudId)) {
-        txnMap[r.id] = cloudId;
-        consumedCloudIds.add(cloudId);
-        return;
-      }
+  let hasOrderVendorCols = true;
+  {
+    const { error } = await supabase.from('order_book').select('vendor_id').eq('store_id', storeId).limit(1);
+    if (error && error.message.includes('schema cache')) {
+      console.warn('[Backup] order_book vendor columns not in schema — skipping');
+      hasOrderVendorCols = false;
     }
-    // Secondary match by date+amount fingerprint (walk-in / no invoice_no)
-    const dateKey = r.date ? String(r.date).split('T')[0] : '_';
-    const amtKey  = r.total_amount != null ? Number(r.total_amount).toFixed(2) : '_';
-    const fp = `${dateKey}|${amtKey}|${r.type}`;
-    const candidates = cloudTxnByFingerprint[fp];
-    if (candidates && candidates.length > 0) {
-      // Consume the first unconsumed candidate from the array
-      const idx = candidates.findIndex(id => !consumedCloudIds.has(id));
-      if (idx !== -1) {
-        txnMap[r.id] = candidates[idx];
-        consumedCloudIds.add(candidates[idx]);
-        return;
-      }
-    }
-    // No match found — stableUUID will be used (fresh insert, first backup from this device)
-  });
+  }
 
-  // 2. Upload Items
-  // Self-healing: tries with default_vendor_id first (latest schema), falls back
-  // to without it if the customer's Supabase hasn't run migrate_vendor_tracking.sql.
+  // ── 5. Upload Items (WITHOUT default_vendor_id — parties don't exist yet) ──
+  // default_vendor_id is a FK → parties. We back-fill after parties are uploaded.
   if (localItems.length > 0) {
-    const buildCloudItems = (includeVendor: boolean) => localItems.map(r => {
-      const row: Record<string, any> = {
-        id: itemMap[r.id],
-        store_id: storeId,
-        name: r.name,
-        hsn: r.hsn || null,
-        unit: r.unit || 'TAB',
-        sale_price: Number(r.sale_price) || 0,
-        purchase_price: Number(r.purchase_price) || 0,
-        opening_stock: Number(r.opening_stock) || 0,
-        current_stock: Number(r.current_stock) || 0,
-        min_stock: Number(r.min_stock) || 0,
-        category: r.category || null,
-        tax_rate: Number(r.tax_rate) || 0,
-        discount: Number(r.discount) || 0,
-        inclusive_tax: r.inclusive_tax === 1 || r.inclusive_tax === true,
-        tabs_per_strip: Number(r.tabs_per_strip) || 10,
-        strips_per_box: Number(r.strips_per_box) || 10,
-        is_active: true,
-      };
-      if (includeVendor) {
-        row.default_vendor_id = r.default_vendor_id && partyMap[r.default_vendor_id]
-          ? partyMap[r.default_vendor_id] : null;
-      }
-      return row;
-    });
-
-    // Try with vendor column first, fall back without it if schema cache rejects it
-    let includeVendor = true;
-    const cloudItems = buildCloudItems(true);
+    const cloudItems = localItems.map(r => ({
+      id: itemMap[r.id],
+      store_id: storeId,
+      name: r.name,
+      hsn: r.hsn || null,
+      unit: r.unit || 'TAB',
+      sale_price: Number(r.sale_price) || 0,
+      purchase_price: Number(r.purchase_price) || 0,
+      opening_stock: Number(r.opening_stock) || 0,
+      current_stock: Number(r.current_stock) || 0,
+      min_stock: Number(r.min_stock) || 0,
+      category: r.category || null,
+      tax_rate: Number(r.tax_rate) || 0,
+      discount: Number(r.discount) || 0,
+      inclusive_tax: r.inclusive_tax === 1 || r.inclusive_tax === true,
+      tabs_per_strip: Number(r.tabs_per_strip) || 10,
+      strips_per_box: Number(r.strips_per_box) || 10,
+      is_active: true,
+      // default_vendor_id omitted intentionally — set after parties upload
+    }));
 
     const chunks = chunkArray(cloudItems, 100);
     for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading items batch ${i + 1}/${chunks.length}...`, 45, 100);
+      onProgress(`Uploading items ${i + 1}/${chunks.length}...`, 15 + Math.round(10 * i / chunks.length), 100);
+      // Use upsert (onConflict: 'id') so backup is idempotent — safe even if delete didn't fully clear
       const { error } = await supabase.from('items').upsert(chunks[i], { onConflict: 'id' });
-      if (error) {
-        // Schema cache miss — column doesn't exist in this Supabase instance yet
-        if (error.message.includes('schema cache') && includeVendor) {
-          console.warn('[Backup] default_vendor_id not in schema cache — retrying items without it');
-          includeVendor = false;
-          // Rebuild ALL items without the vendor column and restart from batch 0
-          const cleanItems = buildCloudItems(false);
-          const cleanChunks = chunkArray(cleanItems, 100);
-          for (let j = 0; j < cleanChunks.length; j++) {
-            onProgress(`Uploading items batch ${j + 1}/${cleanChunks.length}...`, 45, 100);
-            const { error: retryErr } = await supabase.from('items').upsert(cleanChunks[j], { onConflict: 'id' });
-            if (retryErr) throw new Error(`Backup items error: ${retryErr.message}`);
-          }
-          break; // Already uploaded all items in the retry loop
-        }
-        throw new Error(`Backup items error: ${error.message}`);
-      }
+      if (error) throw new Error(`Backup items error: ${error.message}`);
     }
   }
 
-  // 3. Upload Parties
+  // ── 6. Upload Parties ──────────────────────────────────────────────────────
   if (localParties.length > 0) {
     const cloudParties = localParties.map(r => ({
       id: partyMap[r.id],
@@ -270,13 +301,41 @@ export async function backupLocalToCloud(
 
     const chunks = chunkArray(cloudParties, 100);
     for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading parties batch ${i + 1}/${chunks.length}...`, 60, 100);
+      onProgress(`Uploading parties ${i + 1}/${chunks.length}...`, 28 + Math.round(10 * i / chunks.length), 100);
+      // Use upsert (onConflict: 'id') — handles unique constraint on (store_id, name)
       const { error } = await supabase.from('parties').upsert(chunks[i], { onConflict: 'id' });
       if (error) throw new Error(`Backup parties error: ${error.message}`);
     }
   }
 
-  // 4. Upload Transactions
+  // ── 7. Back-fill items.default_vendor_id (parties now exist) ──────────────
+  if (hasItemVendorCol && localItems.length > 0) {
+    const itemsWithVendor = localItems.filter(
+      r => r.default_vendor_id && partyMap[r.default_vendor_id]
+    );
+    if (itemsWithVendor.length > 0) {
+      onProgress('Linking item default vendors...', 40, 100);
+      // Batch updates: build an array of {id, default_vendor_id} and upsert
+      const vendorUpdates = itemsWithVendor.map(r => ({
+        id: itemMap[r.id],
+        store_id: storeId,
+        name: r.name,           // required for UNIQUE constraint satisfaction on upsert
+        default_vendor_id: partyMap[r.default_vendor_id],
+      }));
+      const chunks = chunkArray(vendorUpdates, 100);
+      for (const chunk of chunks) {
+        const { error } = await supabase
+          .from('items')
+          .upsert(chunk, { onConflict: 'id' });
+        if (error) {
+          // Non-fatal — vendor link is a convenience field, not critical
+          console.warn('[Backup] Back-fill vendor links warning:', error.message);
+        }
+      }
+    }
+  }
+
+  // ── 8. Upload Transactions ─────────────────────────────────────────────────
   if (localTxns.length > 0) {
     const cloudTxns = localTxns.map(r => ({
       id: txnMap[r.id],
@@ -296,27 +355,15 @@ export async function backupLocalToCloud(
 
     const chunks = chunkArray(cloudTxns, 100);
     for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading transactions batch ${i + 1}/${chunks.length}...`, 75, 100);
+      onProgress(`Uploading transactions ${i + 1}/${chunks.length}...`, 42 + Math.round(18 * i / chunks.length), 100);
       const { error } = await supabase.from('transactions').upsert(chunks[i], { onConflict: 'id' });
       if (error) throw new Error(`Backup transactions error: ${error.message}`);
     }
   }
 
-  // 5. Upload Transaction Items
+  // ── 9. Upload Transaction Items ────────────────────────────────────────────
   const validTxnItems = localTxnItems.filter(r => txnMap[r.txn_id]);
   if (validTxnItems.length > 0) {
-    const allCloudTxnIds = [...new Set(validTxnItems.map(r => txnMap[r.txn_id]))];
-
-    const deleteBatches = chunkArray(allCloudTxnIds, 50);
-    for (let i = 0; i < deleteBatches.length; i++) {
-      onProgress(`Clearing old line items batch ${i + 1}/${deleteBatches.length}...`, 78, 100);
-      const { error } = await supabase
-        .from('transaction_items')
-        .delete()
-        .in('txn_id', deleteBatches[i]);
-      if (error) throw new Error(`Backup clear line items error: ${error.message}`);
-    }
-
     const byTxn: Record<string, any[]> = {};
     validTxnItems.forEach(r => {
       const txnUuid = txnMap[r.txn_id];
@@ -348,25 +395,21 @@ export async function backupLocalToCloud(
 
     const chunks = chunkArray(cloudTxnItems, 100);
     for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading transaction items batch ${i + 1}/${chunks.length}...`, 85, 100);
-      const { error } = await supabase.from('transaction_items').insert(chunks[i]);
-      if (error) throw new Error(`Backup transaction items error (batch ${i + 1}): ${error.message}`);
+      onProgress(`Uploading line items ${i + 1}/${chunks.length}...`, 60 + Math.round(15 * i / chunks.length), 100);
+      const { error } = await supabase.from('transaction_items').upsert(chunks[i], { onConflict: 'id' });
+      if (error) throw new Error(`Backup line items error: ${error.message}`);
     }
   }
 
-  // 6. Upload Special Rates
-  onProgress('Syncing special rates...', 93, 100);
-  const { error: delRatesErr } = await supabase
-    .from('party_special_rates')
-    .delete()
-    .eq('store_id', storeId);
-  if (delRatesErr) throw new Error(`Backup special rates delete error: ${delRatesErr.message}`);
-
+  // ── 10. Upload Special Rates ───────────────────────────────────────────────
   if (localRates.length > 0) {
+    onProgress('Uploading special rates...', 78, 100);
+    // Local SQLite party_special_rates uses composite PK (party_id, item_id) with NO standalone `id`.
+    // Use composite stableUUID so the cloud id is deterministic and correct.
     const cloudRates = localRates
       .filter(r => itemMap[r.item_id] && partyMap[r.party_id])
       .map(r => ({
-        id: stableUUID('party_special_rates', r.id),
+        id: stableUUID('party_special_rates', `${r.party_id}:${r.item_id}`),
         store_id: storeId,
         party_id: partyMap[r.party_id],
         item_id: itemMap[r.item_id],
@@ -374,71 +417,63 @@ export async function backupLocalToCloud(
         discount: r.discount ? Number(r.discount) : null,
       }));
 
-    console.log(`[Sync] Special rates: uploading ${cloudRates.length} to cloud`);
-    const chunks = chunkArray(cloudRates, 100);
-    for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading special rates batch ${i + 1}/${chunks.length}...`, 95, 100);
-      const { error } = await supabase.from('party_special_rates').insert(chunks[i]);
-      if (error) {
-        console.warn(`[Sync] Special rates insert warning: ${error.message}`);
+    if (cloudRates.length > 0) {
+      for (const chunk of chunkArray(cloudRates, 100)) {
+        const { error } = await supabase.from('party_special_rates').upsert(chunk, { onConflict: 'id' });
+        if (error) throw new Error(`Backup special rates error: ${error.message}`);
       }
     }
   }
 
-  // 7. Upload Order Book
+  // ── 11. Upload Order Book ──────────────────────────────────────────────────
   if (localOrders.length > 0) {
-    const cloudOrders = localOrders.map(r => ({
-      id: stableUUID('order_book', r.id),
-      store_id: storeId,
-      item_id: r.item_id && itemMap[r.item_id] ? itemMap[r.item_id] : null,
-      item_name: r.item_name || null,
-      quantity: Number(r.quantity) || 1,
-      status: ['pending', 'ordered', 'received', 'cancelled'].includes(r.status) ? r.status : 'pending',
-      ordered_at: r.ordered_at ? new Date(r.ordered_at).toISOString() : null,
-      vendor_id: r.vendor_id && partyMap[r.vendor_id] ? partyMap[r.vendor_id] : null,
-      vendor_name: r.vendor_name || null,
-      vendor_phone: r.vendor_phone || null,
-    }));
+    onProgress('Uploading order book...', 83, 100);
+    const cloudOrders = localOrders.map(r => {
+      const row: Record<string, any> = {
+        id: stableUUID('order_book', r.id),
+        store_id: storeId,
+        item_id: r.item_id && itemMap[r.item_id] ? itemMap[r.item_id] : null,
+        item_name: r.item_name || null,
+        quantity: Number(r.quantity) || 1,
+        status: ['pending', 'ordered', 'received', 'cancelled'].includes(r.status) ? r.status : 'pending',
+        ordered_at: r.ordered_at ? new Date(r.ordered_at).toISOString() : null,
+      };
+      if (hasOrderVendorCols) {
+        row.vendor_id = r.vendor_id && partyMap[r.vendor_id] ? partyMap[r.vendor_id] : null;
+        row.vendor_name = r.vendor_name || null;
+        row.vendor_phone = r.vendor_phone || null;
+      }
+      return row;
+    });
 
     const chunks = chunkArray(cloudOrders, 100);
     for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading order book batch ${i + 1}/${chunks.length}...`, 97, 100);
+      onProgress(`Uploading order book ${i + 1}/${chunks.length}...`, 85 + Math.round(5 * i / chunks.length), 100);
       const { error } = await supabase.from('order_book').upsert(chunks[i], { onConflict: 'id' });
       if (error) throw new Error(`Backup order book error: ${error.message}`);
     }
   }
 
-  // 8. Upload App Settings
-  onProgress('Syncing app settings...', 97, 100);
+  // ── 12. Upload App Settings ────────────────────────────────────────────────
+  // Push ONLY rows that actually exist locally. Do NOT merge hardcoded defaults —
+  // that inflates the cloud count and causes a false "Differs" in Data Comparison.
+  // The app already handles default values client-side when a key is missing.
+  if (localSettings.length > 0) {
+    onProgress('Uploading settings...', 93, 100);
+    const cloudSettings = localSettings
+      .filter(r => r.key !== 'gemini_api_key')
+      .map(r => ({
+        store_id: storeId,
+        key: r.key,
+        value: r.value ?? null,
+      }));
 
-  // then overlay whatever the user has explicitly saved locally.
-  const defaultShowKeys: Record<string, string> = {
-    show_mrp: 'true', show_stock: 'true', show_batch: 'true',
-    show_expiry: 'true', show_hsn: 'true', show_tax: 'true', show_discount: 'true',
-    fy_start_month: '4',
-  };
-  const settingsMap: Record<string, string> = { ...defaultShowKeys };
-  localSettings.forEach(r => {
-    if (r.key !== 'gemini_api_key') {
-      settingsMap[r.key] = r.value ?? 'true';
-    }
-  });
-
-  const cloudSettings = Object.entries(settingsMap).map(([key, value]) => ({
-    store_id: storeId,
-    key,
-    value: value ?? null,
-  }));
-
-  if (cloudSettings.length > 0) {
-    const chunks = chunkArray(cloudSettings, 100);
-    for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading app settings batch ${i + 1}/${chunks.length}...`, 99, 100);
-      // upsert on (store_id, key) — safe to run multiple times, no duplicate errors
-      const { error } = await supabase
-        .from('app_settings')
-        .upsert(chunks[i], { onConflict: 'store_id,key' });
-      if (error) throw new Error(`Backup app settings error: ${error.message}`);
+    if (cloudSettings.length > 0) {
+      for (const chunk of chunkArray(cloudSettings, 100)) {
+        // onConflict uses composite key (store_id, key)
+        const { error } = await supabase.from('app_settings').upsert(chunk, { onConflict: 'store_id,key' });
+        if (error) throw new Error(`Backup settings error: ${error.message}`);
+      }
     }
   }
 
@@ -491,9 +526,7 @@ export async function restoreCloudToLocal(
   const { data: cloudSettings, error: e6 } = await supabase.from('app_settings').select('*').eq('store_id', storeId);
   if (e6) throw new Error(`Restore app settings error: ${e6.message}`);
 
-  // 2. Clear local SQLite database tables in reverse dependency order
-  // Under NO circumstances should any SQLite tables be deleted unless we are overwriting
-  // during a user-approved Cloud Restore.
+  // 2. Clear local SQLite tables in reverse dependency order
   onProgress('Preparing local database...', 60, 100);
   await db.execute('DELETE FROM party_special_rates');
   await db.execute('DELETE FROM transaction_items');
@@ -508,8 +541,8 @@ export async function restoreCloudToLocal(
   const partyUuidToId: Record<string, number> = {};
   const txnUuidToId: Record<string, number> = {};
 
-  // 3. Insert into items (without default_vendor_id — parties not yet inserted)
-  const itemCloudDefaultVendorMap: Record<number, string | null> = {}; // localId -> cloud vendor uuid
+  // 3. Insert items (without default_vendor_id — parties not yet inserted)
+  const itemCloudDefaultVendorMap: Record<number, string | null> = {};
   if (cloudItems && cloudItems.length > 0) {
     for (let i = 0; i < cloudItems.length; i++) {
       onProgress(`Restoring local items ${i + 1}/${cloudItems.length}...`, 70, 100);
@@ -527,12 +560,11 @@ export async function restoreCloudToLocal(
       );
       const localItemId = res.lastInsertId!;
       itemUuidToId[r.id] = localItemId;
-      // Remember default_vendor_id cloud UUID to apply after parties are inserted
       if (r.default_vendor_id) itemCloudDefaultVendorMap[localItemId] = r.default_vendor_id;
     }
   }
 
-  // 4. Insert into parties
+  // 4. Insert parties
   if (cloudParties && cloudParties.length > 0) {
     for (let i = 0; i < cloudParties.length; i++) {
       onProgress(`Restoring local parties ${i + 1}/${cloudParties.length}...`, 80, 100);
@@ -540,10 +572,7 @@ export async function restoreCloudToLocal(
       const res = await db.execute(
         `INSERT INTO parties (name, phone, gstin, address, type, opening_balance)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          r.name, r.phone || null, r.gstin || null, r.address || null,
-          r.type || 'customer', Number(r.opening_balance) || 0
-        ]
+        [r.name, r.phone || null, r.gstin || null, r.address || null, r.type || 'customer', Number(r.opening_balance) || 0]
       );
       partyUuidToId[r.id] = res.lastInsertId!;
     }
@@ -556,13 +585,12 @@ export async function restoreCloudToLocal(
     }
   }
 
-  // 5. Insert into transactions
+  // 5. Insert transactions
   if (cloudTxns && cloudTxns.length > 0) {
     for (let i = 0; i < cloudTxns.length; i++) {
       onProgress(`Restoring local transactions ${i + 1}/${cloudTxns.length}...`, 90, 100);
       const r = cloudTxns[i];
       const partyIntId = r.party_id ? partyUuidToId[r.party_id] : null;
-      
       const res = await db.execute(
         `INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
@@ -578,16 +606,14 @@ export async function restoreCloudToLocal(
     }
   }
 
-  // 6. Insert into transaction_items
+  // 6. Insert transaction_items
   if (cloudTxnItems && cloudTxnItems.length > 0) {
     for (let i = 0; i < cloudTxnItems.length; i++) {
       onProgress(`Restoring local line items ${i + 1}/${cloudTxnItems.length}...`, 95, 100);
       const r = cloudTxnItems[i];
       const txnIntId = txnUuidToId[r.txn_id];
       const itemIntId = r.item_id ? itemUuidToId[r.item_id] : null;
-
-      if (!txnIntId) continue; // Skip orphaned records
-
+      if (!txnIntId) continue;
       await db.execute(
         `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, discount_amt, tax_pct, tax_amt, amount, batch_no, expiry_date, scheme_amount)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
@@ -603,14 +629,13 @@ export async function restoreCloudToLocal(
     }
   }
 
-  // 7. Insert into special rates
+  // 7. Insert special rates
   if (cloudRates && cloudRates.length > 0) {
     for (let i = 0; i < cloudRates.length; i++) {
       onProgress(`Restoring special rates ${i + 1}/${cloudRates.length}...`, 98, 100);
       const r = cloudRates[i];
       const partyIntId = partyUuidToId[r.party_id];
       const itemIntId = itemUuidToId[r.item_id];
-
       if (partyIntId && itemIntId) {
         try {
           await db.execute(
@@ -619,13 +644,13 @@ export async function restoreCloudToLocal(
             [partyIntId, itemIntId, r.price ? Number(r.price) : null, r.discount ? Number(r.discount) : null]
           );
         } catch (err) {
-          console.warn('Restore special rate skipped/failed:', err);
+          console.warn('Restore special rate skipped:', err);
         }
       }
     }
   }
 
-  // 8. Insert into order_book
+  // 8. Insert order_book
   if (cloudOrders && cloudOrders.length > 0) {
     for (let i = 0; i < cloudOrders.length; i++) {
       onProgress(`Restoring local order book ${i + 1}/${cloudOrders.length}...`, 99, 100);
@@ -635,23 +660,19 @@ export async function restoreCloudToLocal(
       await db.execute(
         `INSERT INTO order_book (item_id, item_name, quantity, status, ordered_at, vendor_id, vendor_name, vendor_phone)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [
-          itemIntId, r.item_name || null, Number(r.quantity) || 1,
-          r.status || 'pending', r.ordered_at || null,
-          vendorIntId, r.vendor_name || null, r.vendor_phone || null,
-        ]
+        [itemIntId, r.item_name || null, Number(r.quantity) || 1, r.status || 'pending', r.ordered_at || null,
+         vendorIntId, r.vendor_name || null, r.vendor_phone || null]
       );
     }
   }
 
-  // 9. Insert into app_settings
+  // 9. Insert app_settings
   if (cloudSettings && cloudSettings.length > 0) {
     for (let i = 0; i < cloudSettings.length; i++) {
       onProgress(`Restoring local app settings ${i + 1}/${cloudSettings.length}...`, 100, 100);
       const r = cloudSettings[i];
       await db.execute(
-        `INSERT INTO app_settings (key, value)
-         VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2`,
+        `INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = $2`,
         [r.key, r.value || null]
       );
     }

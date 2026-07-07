@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase, Store } from '@/lib/supabase';
@@ -698,6 +698,15 @@ export default function AdminDashboard() {
   const [selectedLedgerStore, setSelectedLedgerStore] = useState<{ id: string; name: string } | null>(null);
   const [deleteStoreTarget, setDeleteStoreTarget] = useState<StoreWithStats | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
+
+  // Reset password state
+  const [resetPasswordStore, setResetPasswordStore] = useState<StoreWithStats | null>(null);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetShowPassword, setResetShowPassword] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetSuccess, setResetSuccess] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
@@ -759,6 +768,43 @@ export default function AdminDashboard() {
     setDeleteError(null);
     setDeleteLoading(false);
     setActionMenuId(null);
+  };
+
+  const handleOpenResetPassword = (store: StoreWithStats) => {
+    setResetPasswordStore(store);
+    setResetEmail('');
+    setResetNewPassword('');
+    setResetShowPassword(false);
+    setResetError(null);
+    setResetSuccess(false);
+    setResetLoading(false);
+    setActionMenuId(null);
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetEmail.trim()) { setResetError('Email address is required.'); return; }
+    if (!resetNewPassword || resetNewPassword.length < 6) { setResetError('Password must be at least 6 characters.'); return; }
+    setResetLoading(true);
+    setResetError(null);
+    try {
+      const { error } = await supabase.rpc('admin_reset_user_password', {
+        p_user_email: resetEmail.trim().toLowerCase(),
+        p_new_password: resetNewPassword,
+      });
+      if (error) throw error;
+      setResetSuccess(true);
+    } catch (e: any) {
+      setResetError(e.message || 'Failed to reset password.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const autoGenResetPassword = () => {
+    const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*';
+    let p = 'MF-';
+    for (let i = 0; i < 9; i++) p += chars.charAt(Math.floor(Math.random() * chars.length));
+    setResetNewPassword(p);
   };
 
   const executeDeleteStore = async () => {
@@ -1014,6 +1060,13 @@ export default function AdminDashboard() {
                                 <span>View Store Ledger</span>
                               </button>
                               <button
+                                className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left text-xs font-semibold text-blue-300 hover:bg-blue-500/10 hover:text-blue-200 transition-colors"
+                                onClick={() => handleOpenResetPassword(store)}
+                              >
+                                <Key size={14} className="text-blue-400" />
+                                <span>Reset User Password</span>
+                              </button>
+                              <button
                                 className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left text-xs font-semibold text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
                                 onClick={() => toggleStoreStatus(store)}
                               >
@@ -1137,7 +1190,7 @@ export default function AdminDashboard() {
       {/* Delete Confirmation Modal */}
       {deleteStoreTarget && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200" onClick={e => e.target === e.currentTarget && setDeleteStoreTarget(null)}>
-          <div 
+          <div
             className="w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-red-500/20"
             style={{
               background: 'rgba(15, 23, 42, 0.95)',
@@ -1201,6 +1254,100 @@ export default function AdminDashboard() {
         </div>
       )}
 
+      {/* Reset Password Modal */}
+      {resetPasswordStore && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-fade-in" onClick={e => e.target === e.currentTarget && !resetLoading && setResetPasswordStore(null)}>
+          <div className="w-full max-w-lg rounded-3xl overflow-hidden" style={{ background: 'rgba(10, 14, 26, 0.98)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: '0 40px 80px -15px rgba(0,0,0,0.9)' }}>
+            <div className="px-8 py-6 border-b border-white/5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/25 flex items-center justify-center text-blue-400"><Key size={18} /></div>
+                <div>
+                  <h3 className="text-white font-extrabold text-lg leading-none">Reset User Password</h3>
+                  <p className="text-slate-500 text-xs mt-1">Store: <span className="text-blue-400 font-semibold">{resetPasswordStore.name}</span></p>
+                </div>
+              </div>
+            </div>
+
+            {resetSuccess ? (
+              <div className="px-8 py-10 text-center space-y-4">
+                <div className="w-16 h-16 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mx-auto">
+                  <CheckCircle size={32} />
+                </div>
+                <h4 className="text-white font-extrabold text-xl">Password Reset!</h4>
+                <p className="text-slate-400 text-sm">The password for <strong className="text-white">{resetEmail}</strong> has been updated successfully.</p>
+                {resetNewPassword && (
+                  <div className="p-4 rounded-xl bg-white/5 border border-white/10 text-left">
+                    <p className="text-xs text-slate-400 mb-1 uppercase font-semibold">New Password (copy this!)</p>
+                    <p className="font-mono text-emerald-300 text-sm select-all break-all">{resetNewPassword}</p>
+                  </div>
+                )}
+                <button
+                  onClick={() => setResetPasswordStore(null)}
+                  className="w-full h-11 rounded-xl text-sm font-bold text-white transition-all"
+                  style={{ background: 'linear-gradient(135deg, #2563eb, #4f46e5)' }}
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="px-8 py-6 space-y-4">
+                  <div>
+                    <label className="text-xs text-slate-400 font-semibold block mb-2 uppercase tracking-wider">User Email Address</label>
+                    <input
+                      type="email"
+                      value={resetEmail}
+                      onChange={e => { setResetEmail(e.target.value); setResetError(null); }}
+                      placeholder="owner@store.com"
+                      className="w-full h-11 px-4 rounded-xl text-sm text-white placeholder-slate-600 bg-white/5 border border-white/10 outline-none focus:border-blue-500/50 focus:bg-white/[0.08] transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 font-semibold block mb-2 uppercase tracking-wider">New Password</label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type={resetShowPassword ? 'text' : 'password'}
+                          value={resetNewPassword}
+                          onChange={e => { setResetNewPassword(e.target.value); setResetError(null); }}
+                          placeholder="Enter new password (min. 6 chars)"
+                          className="w-full h-11 px-4 pr-11 rounded-xl text-sm text-white placeholder-slate-600 bg-white/5 border border-white/10 outline-none focus:border-blue-500/50 focus:bg-white/[0.08] transition-all font-mono"
+                        />
+                        <button type="button" onClick={() => setResetShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
+                          {resetShowPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={autoGenResetPassword}
+                        className="h-11 px-4 rounded-xl bg-blue-600/10 border border-blue-500/25 hover:bg-blue-600/20 text-blue-400 font-semibold text-xs transition-colors flex items-center gap-1.5 flex-shrink-0"
+                      >
+                        <Key size={13} /> Auto-Generate
+                      </button>
+                    </div>
+                  </div>
+                  {resetError && <p className="text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">{resetError}</p>}
+                  <div className="p-3 rounded-xl bg-amber-500/5 border border-amber-500/15 text-xs text-amber-400">
+                    ⚠️ The user must sign in again after the password is changed. Share the new password securely.
+                  </div>
+                </div>
+                <div className="flex gap-3 px-8 py-5 border-t border-white/5">
+                  <button onClick={() => setResetPasswordStore(null)} className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:text-white hover:bg-white/5 transition-all">Cancel</button>
+                  <button
+                    onClick={handleResetPassword}
+                    disabled={resetLoading}
+                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+                    style={{ background: 'linear-gradient(135deg, #2563eb, #4f46e5)', boxShadow: '0 4px 16px rgba(37,99,235,0.3)' }}
+                  >
+                    {resetLoading ? <><Loader2 size={14} className="animate-spin" /> Resetting...</> : <><Key size={14} /> Reset Password</>}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Store Ledger Drawer */}
       {selectedLedgerStore && (
         <StoreHistoryModal
@@ -1209,7 +1356,6 @@ export default function AdminDashboard() {
           onClose={() => setSelectedLedgerStore(null)}
         />
       )}
-
 
     </div>
   );
