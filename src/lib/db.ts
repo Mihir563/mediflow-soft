@@ -119,6 +119,61 @@ export const initDB = async () => {
     console.error("Failed to backfill transactions created_at:", e);
   }
 
+  // Auto-Deduplicate historical bugs from import scripts
+  try {
+    // 0. Delete fake/duplicate transactions (and their items) that have the wrong type for their party
+    // (e.g. if a vendor has a "sale" transaction, it was a duplicate bug from a previous import)
+    await dbInstance.execute(`
+      DELETE FROM transaction_items 
+      WHERE txn_id IN (
+        SELECT t.id FROM transactions t
+        JOIN parties p ON p.id = t.party_id
+        WHERE (p.type = 'vendor' AND t.type = 'sale')
+           OR (p.type = 'customer' AND t.type = 'purchase')
+      )
+    `);
+    
+    await dbInstance.execute(`
+      DELETE FROM transactions 
+      WHERE id IN (
+        SELECT t.id FROM transactions t
+        JOIN parties p ON p.id = t.party_id
+        WHERE (p.type = 'vendor' AND t.type = 'sale')
+           OR (p.type = 'customer' AND t.type = 'purchase')
+      )
+    `);
+
+    // 1. Remove duplicate items (exact matches for same txn)
+    await dbInstance.execute(`
+      DELETE FROM transaction_items 
+      WHERE id NOT IN (
+        SELECT MIN(id) FROM transaction_items 
+        GROUP BY txn_id, item_id, quantity, price
+      )
+    `);
+    
+    // 2. Re-point any orphaned transaction_items to the primary transaction before deleting duplicates
+    await dbInstance.execute(`
+      UPDATE transaction_items
+      SET txn_id = (
+        SELECT MIN(id) FROM transactions t2 
+        WHERE t2.invoice_no = (SELECT invoice_no FROM transactions WHERE id = transaction_items.txn_id)
+          AND t2.type = (SELECT type FROM transactions WHERE id = transaction_items.txn_id)
+      )
+    `);
+
+    // 3. Remove duplicate transactions (same invoice_no + type)
+    await dbInstance.execute(`
+      DELETE FROM transactions 
+      WHERE id NOT IN (
+        SELECT MIN(id) FROM transactions 
+        GROUP BY invoice_no, type
+      )
+    `);
+  } catch (e) {
+    console.error("Failed to deduplicate database:", e);
+  }
+
   // Create trigger to automatically set created_at for future inserts where it's NULL
   try {
     await dbInstance.execute(`

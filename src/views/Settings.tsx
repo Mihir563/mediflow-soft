@@ -417,30 +417,49 @@ export default function Settings() {
           let partyId: number | null = null;
           const partyName = (r['Party Name'] || '').toString().trim();
           if (partyName) {
-            const pRes = await db.select<{id:number}[]>(`SELECT id FROM parties WHERE name = $1 LIMIT 1`, [partyName]);
+            const pRes = await db.select<{id:number}[]>(`SELECT id FROM parties WHERE LOWER(TRIM(name)) = LOWER($1) LIMIT 1`, [partyName]);
             if (pRes.length) partyId = pRes[0].id;
           }
 
-          const existing = await db.select<{id:number}[]>(`SELECT id FROM transactions WHERE invoice_no = $1 AND type = $2 LIMIT 1`, [invoiceNo, type]);
-          if (existing.length) continue; // skip duplicates
-
           const paymentType = ['cash','credit','upi','cheque','bank'].includes((r['Payment Type']||'').toLowerCase()) ? r['Payment Type'].toLowerCase() : 'cash';
           const status = ['paid','partial','unpaid'].includes((r['Status']||'').toLowerCase()) ? r['Status'].toLowerCase() : 'paid';
-          await db.execute(
-            `INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-            [
-              invoiceNo,
-              r['Date'] || new Date().toISOString().slice(0,10),
-              partyId,
-              Number(r['Total Amount (₹)'])||0,
-              Number(r['Paid Amount (₹)'])||0,
-              Number(r['Balance Due (₹)'])||0,
-              type, paymentType, status,
-              r['Challan No']||'',
-              r['Description']||'',
-            ]
-          );
+
+          // Check if transaction already exists — update if so, insert if not
+          const existing = await db.select<{id:number}[]>(`SELECT id FROM transactions WHERE invoice_no = $1 AND type = $2 LIMIT 1`, [invoiceNo, type]);
+          if (existing.length) {
+            // UPDATE existing transaction with imported data
+            await db.execute(
+              `UPDATE transactions SET date=$1, party_id=$2, total_amount=$3, paid_amount=$4, balance_due=$5, payment_type=$6, status=$7, challan_no=$8, description=$9 WHERE id=$10`,
+              [
+                r['Date'] || new Date().toISOString().slice(0,10),
+                partyId,
+                Number(r['Total Amount (₹)'])||0,
+                Number(r['Paid Amount (₹)'])||0,
+                Number(r['Balance Due (₹)'])||0,
+                paymentType, status,
+                r['Challan No']||'',
+                r['Description']||'',
+                existing[0].id,
+              ]
+            );
+          } else {
+            // INSERT new transaction
+            await db.execute(
+              `INSERT INTO transactions (invoice_no, date, party_id, total_amount, paid_amount, balance_due, type, payment_type, status, challan_no, description)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+              [
+                invoiceNo,
+                r['Date'] || new Date().toISOString().slice(0,10),
+                partyId,
+                Number(r['Total Amount (₹)'])||0,
+                Number(r['Paid Amount (₹)'])||0,
+                Number(r['Balance Due (₹)'])||0,
+                type, paymentType, status,
+                r['Challan No']||'',
+                r['Description']||'',
+              ]
+            );
+          }
           importedTxns++;
         }
       }
@@ -450,37 +469,64 @@ export default function Settings() {
       if (txnItemSheet) {
         setImportMsg('Importing transaction line items...');
         const rows = XLSX.utils.sheet_to_json<any>(txnItemSheet);
+        let skippedTxnItems = 0;
+        const clearedTxns = new Set<number>();
+        const importedRows = new Set<string>(); // To deduplicate Excel rows
         for (const r of rows) {
-          const invoiceNo = (r['Invoice No']||'').toString().trim();
-          const type = (r['Type']||'').toLowerCase();
-          if (!invoiceNo) continue;
-          const txnRes = await db.select<{id:number}[]>(`SELECT id FROM transactions WHERE invoice_no=$1 AND type=$2 LIMIT 1`, [invoiceNo, type]);
-          if (!txnRes.length) continue;
-          const txnId = txnRes[0].id;
-          // Resolve item id
-          let itemId: number | null = null;
-          const itemName = (r['Item Name']||'').toString().trim();
-          if (itemName) {
-            const iRes = await db.select<{id:number}[]>(`SELECT id FROM items WHERE name=$1 LIMIT 1`,[itemName]);
-            if (iRes.length) itemId = iRes[0].id;
+          try {
+            const invoiceNo = (r['Invoice No']||'').toString().trim();
+            const type = (r['Type']||'').toLowerCase();
+            if (!invoiceNo) continue;
+            const txnRes = await db.select<{id:number}[]>(`SELECT id FROM transactions WHERE invoice_no=$1 AND type=$2 LIMIT 1`, [invoiceNo, type]);
+            if (!txnRes.length) { skippedTxnItems++; continue; }
+            const txnId = txnRes[0].id;
+            
+            // Clear existing items for this transaction before inserting new ones to prevent duplicates
+            if (!clearedTxns.has(txnId)) {
+              await db.execute(`DELETE FROM transaction_items WHERE txn_id=$1`, [txnId]);
+              clearedTxns.add(txnId);
+            }
+
+            // Resolve item id — allow null if item doesn't exist on this machine
+            let itemId: number | null = null;
+            const itemName = (r['Item Name']||'').toString().trim();
+            if (itemName) {
+              const iRes = await db.select<{id:number}[]>(`SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER($1) LIMIT 1`,[itemName]);
+              if (iRes.length) itemId = iRes[0].id;
+            }
+
+            const qty = Number(r['Quantity'])||0;
+            const price = Number(r['Price (₹)'])||0;
+            
+            // Skip exact duplicates in the Excel file itself
+            const rowKey = `${txnId}-${itemName}-${qty}-${price}`;
+            if (importedRows.has(rowKey)) {
+              continue;
+            }
+            importedRows.add(rowKey);
+
+            await db.execute(
+              `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, tax_pct, amount, batch_no, expiry_date)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+              [
+                txnId, itemId, itemName,
+                qty,
+                r['Unit']||'',
+                price,
+                Number(r['Discount (%)'])||0,
+                Number(r['Tax (%)'])||0,
+                Number(r['Amount (₹)'])||0,
+                r['Batch No']||'',
+                r['Expiry Date']||'',
+              ]
+            );
+            importedTxnItems++;
+          } catch (rowErr: any) {
+            console.warn('[Import] Skipped transaction item row:', rowErr.message);
+            skippedTxnItems++;
           }
-          await db.execute(
-            `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, tax_pct, amount, batch_no, expiry_date)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-            [
-              txnId, itemId, itemName,
-              Number(r['Quantity'])||0,
-              r['Unit']||'',
-              Number(r['Price (₹)'])||0,
-              Number(r['Discount (%)'])||0,
-              Number(r['Tax (%)'])||0,
-              Number(r['Amount (₹)'])||0,
-              r['Batch No']||'',
-              r['Expiry Date']||'',
-            ]
-          );
-          importedTxnItems++;
         }
+        if (skippedTxnItems > 0) console.log(`[Import] Skipped ${skippedTxnItems} transaction item rows due to missing references.`);
       }
 
       // ── Sheet 5: Order Book ───────────────────────────────────────

@@ -160,7 +160,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      // Handle invalid/expired refresh tokens gracefully
+      if (event === 'TOKEN_REFRESHED' && !session) {
+        console.warn('[Auth] Token refresh failed — session expired. Signing out.');
+        supabase.auth.signOut();
+        setProfile(null);
+        setActiveStoreState(null);
+        setActiveRole(null);
+        clearCloudDB();
+        return;
+      }
+      if (event === 'SIGNED_OUT') {
+        setSession(null);
+        setUser(null);
+        setProfile(null);
+        setActiveStoreState(null);
+        setActiveRole(null);
+        clearCloudDB();
+        return;
+      }
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
