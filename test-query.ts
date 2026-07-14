@@ -1,0 +1,1 @@
+import { supabase } from './src/lib/supabase'; async function test() { const res = await supabase.from('transaction_items').select('quantity, amount, transactions!inner(id, type, date, invoice_no, store_id, total_amount, parties(name))').limit(1); console.log(JSON.stringify(res, null, 2)); } test();  
