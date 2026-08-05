@@ -165,7 +165,46 @@ export async function syncTransactionToCloud(
           is_active: true,
         }, { onConflict: 'id' });
       }
+    } else {
+      // party_id is null — try to repair via invoice-prefix matching from other transactions
+      if (t.invoice_no) {
+        const getPrefix = (inv: string) => {
+          let clean = inv.trim().toUpperCase().replace(/^(2[456]\/|2[456]-)/, '');
+          const m = clean.match(/^([A-Z\-_/]+)/);
+          return m?.[1] ?? clean.slice(0, 3);
+        };
+        const prefix = getPrefix(t.invoice_no);
+        if (prefix) {
+          const similar = await db.select<any[]>(
+            `SELECT party_id FROM transactions WHERE invoice_no LIKE $1 AND party_id IS NOT NULL LIMIT 1`,
+            [`${prefix}%`]
+          );
+          if (similar.length && similar[0].party_id) {
+            const resolvedLocalId = similar[0].party_id;
+            // Persist fix to local SQLite
+            await db.execute(`UPDATE transactions SET party_id = $1 WHERE id = $2`, [resolvedLocalId, localTxnId]);
+            t.party_id = resolvedLocalId;
+            const parties2 = await db.select<any[]>(`SELECT * FROM parties WHERE id = $1`, [resolvedLocalId]);
+            if (parties2.length) {
+              const p = parties2[0];
+              partyUUID = stableUUID('parties', p.id);
+              await supabase.from('parties').upsert({
+                id: partyUUID,
+                store_id: storeId,
+                name: p.name,
+                phone: p.phone || null,
+                gstin: p.gstin || null,
+                address: p.address || null,
+                type: ['customer', 'vendor'].includes(p.type) ? p.type : 'customer',
+                opening_balance: Number(p.opening_balance) || 0,
+                is_active: true,
+              }, { onConflict: 'id' });
+            }
+          }
+        }
+      }
     }
+
 
     // 3. Upsert the transaction
     await supabase.from('transactions').upsert({
@@ -321,55 +360,86 @@ export async function backupLocalToCloud(
   const localOrders   = await db.select<any[]>('SELECT * FROM order_book');
   const localSettings = await db.select<any[]>('SELECT * FROM app_settings');
 
-  // ── 2. Build stable UUID maps ──────────────────────────────────────────────
+  // ── 2. Build stable UUID maps with deduplication by normalized name ──────────────
   const itemMap:  Record<number, string> = {};
   const partyMap: Record<number, string> = {};
   const txnMap:   Record<number, string> = {};
-  localItems.forEach(r   => { itemMap[r.id]  = stableUUID('items', r.id); });
-  localParties.forEach(r => { partyMap[r.id] = stableUUID('parties', r.id); });
-  localTxns.forEach(r    => { txnMap[r.id]   = stableUUID('transactions', r.id); });
 
-  // ── 3. Delete ALL existing cloud data (children first, then parents) ───────
+  // Group items by normalized name so duplicate local items map to one canonical cloud UUID
+  const itemsByNameGroup = new Map<string, any[]>();
+  localItems.forEach(r => {
+    const k = (r.name || '').toLowerCase().trim();
+    if (!k) return;
+    const g = itemsByNameGroup.get(k) || [];
+    g.push(r);
+    itemsByNameGroup.set(k, g);
+  });
+  const canonicalLocalItems: any[] = [];
+  itemsByNameGroup.forEach((group) => {
+    const canonical = group.reduce((newest, item) => Number(item.id) > Number(newest.id) ? item : newest);
+    const cloudUuid = stableUUID('items', canonical.id);
+    group.forEach(r => { itemMap[r.id] = cloudUuid; });
+    canonicalLocalItems.push(canonical);
+  });
+
+  // Group parties by normalized name so duplicate local parties map to one canonical cloud UUID
+  const partiesByNameGroup = new Map<string, any[]>();
+  localParties.forEach(r => {
+    const k = (r.name || '').toLowerCase().trim();
+    if (!k) return;
+    const g = partiesByNameGroup.get(k) || [];
+    g.push(r);
+    partiesByNameGroup.set(k, g);
+  });
+  const canonicalLocalParties: any[] = [];
+  partiesByNameGroup.forEach((group) => {
+    const canonical = group.reduce((newest, item) => Number(item.id) > Number(newest.id) ? item : newest);
+    const cloudUuid = stableUUID('parties', canonical.id);
+    group.forEach(r => { partyMap[r.id] = cloudUuid; });
+    canonicalLocalParties.push(canonical);
+  });
+
+  localTxns.forEach(r => { txnMap[r.id] = stableUUID('transactions', r.id); });
+
+  // ── 3. Delete ALL existing cloud data safely in chunks until 0 remain ──────
   onProgress('Clearing existing cloud data...', 5, 100);
 
-  // transaction_items has no store_id — must fetch parent transaction IDs first
-  const existingTxnIds: string[] = [];
-  let txnFrom = 0;
-  while (true) {
-    const { data } = await supabase
-      .from('transactions').select('id').eq('store_id', storeId)
-      .range(txnFrom, txnFrom + 999);
-    if (!data || data.length === 0) break;
-    existingTxnIds.push(...data.map((r: any) => r.id));
-    if (data.length < 1000) break;
-    txnFrom += 1000;
-  }
-  if (existingTxnIds.length > 0) {
-    for (const batch of chunkArray(existingTxnIds, 50)) {
-      const { error } = await supabase.from('transaction_items').delete().in('txn_id', batch);
-      if (error) console.warn('[Backup] transaction_items delete warning:', error.message);
+  // Helper to wipe table by store_id in chunks
+  const wipeTableByStore = async (table: string) => {
+    while (true) {
+      const { data } = await supabase.from(table).select('id').eq('store_id', storeId).limit(500);
+      if (!data || data.length === 0) break;
+      const ids = data.map((r: any) => r.id);
+      const { error } = await supabase.from(table).delete().in('id', ids);
+      if (error) {
+        console.warn(`[BackupWipe] Error deleting ${table}:`, error.message);
+        break;
+      }
     }
+  };
+
+  // Wipe transactions & transaction_items in batches
+  while (true) {
+    const { data: txns } = await supabase.from('transactions').select('id').eq('store_id', storeId).limit(200);
+    if (!txns || txns.length === 0) break;
+    const txnIds = txns.map((r: any) => r.id);
+    await supabase.from('transaction_items').delete().in('txn_id', txnIds);
+    await supabase.from('transactions').delete().in('id', txnIds);
   }
 
-  onProgress('Clearing cloud records...', 8, 100);
-  // Delete in dependency order: child tables first, then parent tables
-  await supabase.from('party_special_rates').delete().eq('store_id', storeId);
-  await supabase.from('order_book').delete().eq('store_id', storeId);
-  await supabase.from('transactions').delete().eq('store_id', storeId);
-  // Now safe to delete parents
-  await supabase.from('items').delete().eq('store_id', storeId);
-  await supabase.from('parties').delete().eq('store_id', storeId);
-  await supabase.from('app_settings').delete().eq('store_id', storeId);
+  // Wipe child & parent tables
+  await wipeTableByStore('party_special_rates');
+  await wipeTableByStore('order_book');
+  await wipeTableByStore('items');
+  await wipeTableByStore('parties');
+  await wipeTableByStore('app_settings');
 
-  // Small delay to ensure Supabase propagates the deletes before re-inserting
+  // Small delay to ensure Supabase finishes clearing
   await new Promise(resolve => setTimeout(resolve, 500));
 
   onProgress('Cloud cleared. Uploading...', 12, 100);
 
   // ── 4. Detect optional migrated columns ───────────────────────────────────
-  // items.default_vendor_id and order_book.vendor_* were added in
-  // migrate_vendor_tracking.sql. Customers who haven't run that migration
-  // will get a schema cache error. We detect and skip gracefully.
   let hasItemVendorCol = true;
   {
     const { error } = await supabase.from('items').select('default_vendor_id').eq('store_id', storeId).limit(1);
@@ -388,10 +458,9 @@ export async function backupLocalToCloud(
     }
   }
 
-  // ── 5. Upload Items (WITHOUT default_vendor_id — parties don't exist yet) ──
-  // default_vendor_id is a FK → parties. We back-fill after parties are uploaded.
-  if (localItems.length > 0) {
-    const cloudItems = localItems.map(r => ({
+  // ── 5. Upload Items ────────────────────────────────────────────────────────
+  if (canonicalLocalItems.length > 0) {
+    const cloudItems = canonicalLocalItems.map(r => ({
       id: itemMap[r.id],
       store_id: storeId,
       name: r.name,
@@ -409,21 +478,19 @@ export async function backupLocalToCloud(
       tabs_per_strip: Number(r.tabs_per_strip) || 10,
       strips_per_box: Number(r.strips_per_box) || 10,
       is_active: true,
-      // default_vendor_id omitted intentionally — set after parties upload
     }));
 
     const chunks = chunkArray(cloudItems, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading items ${i + 1}/${chunks.length}...`, 15 + Math.round(10 * i / chunks.length), 100);
-      // Use upsert (onConflict: 'id') so backup is idempotent — safe even if delete didn't fully clear
       const { error } = await supabase.from('items').upsert(chunks[i], { onConflict: 'id' });
       if (error) throw new Error(`Backup items error: ${error.message}`);
     }
   }
 
   // ── 6. Upload Parties ──────────────────────────────────────────────────────
-  if (localParties.length > 0) {
-    const cloudParties = localParties.map(r => ({
+  if (canonicalLocalParties.length > 0) {
+    const cloudParties = canonicalLocalParties.map(r => ({
       id: partyMap[r.id],
       store_id: storeId,
       name: r.name,
@@ -438,15 +505,16 @@ export async function backupLocalToCloud(
     const chunks = chunkArray(cloudParties, 100);
     for (let i = 0; i < chunks.length; i++) {
       onProgress(`Uploading parties ${i + 1}/${chunks.length}...`, 28 + Math.round(10 * i / chunks.length), 100);
-      // Use upsert (onConflict: 'id') — handles unique constraint on (store_id, name)
       const { error } = await supabase.from('parties').upsert(chunks[i], { onConflict: 'id' });
       if (error) throw new Error(`Backup parties error: ${error.message}`);
     }
   }
 
   // ── 7. Back-fill items.default_vendor_id (parties now exist) ──────────────
-  if (hasItemVendorCol && localItems.length > 0) {
-    const itemsWithVendor = localItems.filter(
+  if (hasItemVendorCol && canonicalLocalItems.length > 0) {
+    // Only update the canonical item for a duplicated local name. Sending both
+    // rows reintroduces the same store_id/name conflict this backup avoids.
+    const itemsWithVendor = canonicalLocalItems.filter(
       r => r.default_vendor_id && partyMap[r.default_vendor_id]
     );
     if (itemsWithVendor.length > 0) {
@@ -469,6 +537,86 @@ export async function backupLocalToCloud(
         }
       }
     }
+  }
+
+  // ── 7b. Repair NULL party_ids before uploading ────────────────────────────
+  // Build a name→local_id map from parties for fast lookups
+  onProgress('Repairing unlinked party references...', 41, 100);
+  const partyNameToLocalId: Record<string, number> = {};
+  localParties.forEach(p => {
+    if (p.name) {
+      partyNameToLocalId[p.name.toLowerCase().trim()] = p.id;
+      // Also store with simplified key (remove spaces/dots/dashes)
+      const simplified = p.name.toLowerCase().replace(/[\s./()-]+/g, '');
+      if (simplified) partyNameToLocalId[simplified] = p.id;
+    }
+  });
+
+  // For transactions with NULL party_id, try to resolve via transaction_items history
+  const nullPartyTxns = localTxns.filter(t => !t.party_id);
+  if (nullPartyTxns.length > 0) {
+    // Build item→party map from transactions that DO have a party_id
+    const itemPartyMap: Record<string, number> = {};
+    for (const ti of localTxnItems) {
+      const txn = localTxns.find(t => t.id === ti.txn_id);
+      if (txn?.party_id && ti.item_name) {
+        itemPartyMap[ti.item_name.toLowerCase().trim()] = txn.party_id;
+      }
+    }
+
+    // Build invoice-prefix→party map
+    const getPrefix = (inv: string) => {
+      if (!inv) return '';
+      let clean = inv.trim().toUpperCase().replace(/^(2[456]\/|2[456]-)/, '');
+      const m = clean.match(/^([A-Z\-_/]+)/);
+      return m?.[1] ?? clean.slice(0, 3);
+    };
+    const prefixPartyMap: Record<string, number> = {};
+    for (const t of localTxns) {
+      if (t.party_id && t.invoice_no) {
+        const prefix = getPrefix(t.invoice_no);
+        if (prefix && !prefixPartyMap[prefix]) prefixPartyMap[prefix] = t.party_id;
+      }
+    }
+
+    let repaired = 0;
+    for (const t of nullPartyTxns) {
+      let resolvedId: number | null = null;
+
+      // Strategy 1: description or challan_no looks like a party name
+      const desc = (t.description || '').trim();
+      const challan = (t.challan_no || '').trim();
+      for (const candidate of [desc, challan]) {
+        if (candidate.length > 3 && !/^\d+$/.test(candidate)) {
+          const id = partyNameToLocalId[candidate.toLowerCase()]
+            ?? partyNameToLocalId[candidate.toLowerCase().replace(/[\s./()-]+/g, '')];
+          if (id) { resolvedId = id; break; }
+        }
+      }
+
+      // Strategy 2: look at items in this transaction — find a known party for those items
+      if (!resolvedId) {
+        const myItems = localTxnItems.filter(ti => ti.txn_id === t.id);
+        for (const ti of myItems) {
+          const pid = itemPartyMap[ti.item_name?.toLowerCase().trim()];
+          if (pid) { resolvedId = pid; break; }
+        }
+      }
+
+      // Strategy 3: invoice prefix matching
+      if (!resolvedId && t.invoice_no) {
+        resolvedId = prefixPartyMap[getPrefix(t.invoice_no)] ?? null;
+      }
+
+      if (resolvedId) {
+        try {
+          await db.execute(`UPDATE transactions SET party_id = $1 WHERE id = $2`, [resolvedId, t.id]);
+          t.party_id = resolvedId; // update in-memory so mapping below picks it up
+          repaired++;
+        } catch { /* non-fatal */ }
+      }
+    }
+    if (repaired > 0) console.log(`[Backup] Repaired party_id for ${repaired} transactions`);
   }
 
   // ── 8. Upload Transactions ─────────────────────────────────────────────────

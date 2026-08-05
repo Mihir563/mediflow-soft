@@ -508,15 +508,34 @@ export default function SaleInvoice({ editTxnId, onSaved, tabId, onLabelChange }
           const taxable = Math.max(0, base - discAmt - schemeVal);
           const taxAmt = taxable * (taxVal / 100);
           const amount = taxable + taxAmt;
+
+          let resolvedItemId = row.itemId;
+          if (!resolvedItemId && row.name.trim()) {
+            const existing = await db.select<any[]>(
+              `SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+              [row.name.trim()]
+            );
+            if (existing.length > 0) {
+              resolvedItemId = existing[0].id;
+            } else {
+              const newItem = await db.execute(
+                `INSERT INTO items (name, unit, purchase_price, sale_price, current_stock, tabs_per_strip, strips_per_box, tax_rate, discount)
+                 VALUES ($1, 'TAB', $2, $2, 0, 10, 10, $3, $4)`,
+                [row.name.trim(), priceVal, taxVal, discVal]
+              );
+              resolvedItemId = Number((newItem as { lastInsertId?: number }).lastInsertId);
+            }
+          }
+
           await db.execute(
             `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, discount_amt, tax_pct, tax_amt, amount, batch_no, expiry_date, scheme_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-            [editTxnDbId, row.itemId, row.name, qtyVal, row.unit, priceVal, discVal, discAmt + schemeVal, taxVal, taxAmt, amount, row.batch || '', row.expiry || '', schemeVal]
+            [editTxnDbId, resolvedItemId, row.name, qtyVal, row.unit, priceVal, discVal, discAmt + schemeVal, taxVal, taxAmt, amount, row.batch || '', row.expiry || '', schemeVal]
           );
-          if (row.itemId) {
+          if (resolvedItemId) {
             let inventoryQty = qtyVal;
             if (row.unit === 'BOX') inventoryQty = qtyVal * (Number(row.stripsPerBox) || 1) * (Number(row.tabsPerStrip) || 1);
             else if (row.unit === 'STRIP') inventoryQty = qtyVal * (Number(row.tabsPerStrip) || 1);
-            await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [inventoryQty, row.itemId]);
+            await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [inventoryQty, resolvedItemId]);
           }
         }
         setStatus(`✅ Invoice ${invoiceNo} updated successfully!`);
@@ -548,14 +567,35 @@ export default function SaleInvoice({ editTxnId, onSaved, tabId, onLabelChange }
           const taxable = Math.max(0, base - discAmt - schemeVal);
           const taxAmt = taxable * (taxVal / 100);
           const amount = taxable + taxAmt;
+
+          let resolvedItemId = row.itemId;
+          if (!resolvedItemId && row.name.trim()) {
+            const existing = await db.select<any[]>(
+              `SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+              [row.name.trim()]
+            );
+            if (existing.length > 0) {
+              resolvedItemId = existing[0].id;
+            } else {
+              const newItem = await db.execute(
+                `INSERT INTO items (name, unit, purchase_price, sale_price, current_stock, tabs_per_strip, strips_per_box, tax_rate, discount)
+                 VALUES ($1, 'TAB', $2, $2, 0, 10, 10, $3, $4)`,
+                [row.name.trim(), priceVal, taxVal, discVal]
+              );
+              resolvedItemId = Number((newItem as { lastInsertId?: number }).lastInsertId);
+            }
+          }
+
           await db.execute(
             `INSERT INTO transaction_items (txn_id, item_id, item_name, quantity, unit, price, discount_pct, discount_amt, tax_pct, tax_amt, amount, batch_no, expiry_date, scheme_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-            [txnId, row.itemId, row.name, qtyVal, row.unit, priceVal, discVal, discAmt + schemeVal, taxVal, taxAmt, amount, row.batch || '', row.expiry || '', schemeVal]
+            [txnId, resolvedItemId, row.name, qtyVal, row.unit, priceVal, discVal, discAmt + schemeVal, taxVal, taxAmt, amount, row.batch || '', row.expiry || '', schemeVal]
           );
-          let inventoryQty = qtyVal;
-          if (row.unit === 'BOX') inventoryQty = qtyVal * (Number(row.stripsPerBox) || 1) * (Number(row.tabsPerStrip) || 1);
-          else if (row.unit === 'STRIP') inventoryQty = qtyVal * (Number(row.tabsPerStrip) || 1);
-          await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [inventoryQty, row.itemId]);
+          if (resolvedItemId) {
+            let inventoryQty = qtyVal;
+            if (row.unit === 'BOX') inventoryQty = qtyVal * (Number(row.stripsPerBox) || 1) * (Number(row.tabsPerStrip) || 1);
+            else if (row.unit === 'STRIP') inventoryQty = qtyVal * (Number(row.tabsPerStrip) || 1);
+            await db.execute(`UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`, [inventoryQty, resolvedItemId]);
+          }
         }
         setStatus(`✅ Invoice ${invoiceNo} saved!`);
         // 🔄 Real-time cloud sync — always attempt when store is set; isOnline check is advisory

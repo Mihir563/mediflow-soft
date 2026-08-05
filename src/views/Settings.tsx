@@ -29,6 +29,29 @@ export type AppSettings = typeof defaultSettings;
 export const FY_SETTING_KEY = 'fy_start_month';
 export const FY_DEFAULT_MONTH = 4; // April
 
+const VYAPAR_ITEM_HEADERS = [
+  'Item Code', 'Item Name', 'HSN', 'Sale Price', 'Purchase Price',
+  'Discount Type', 'Sale Discount', 'Opening Stock Quantity',
+  'Minimum Stock Quantity', 'Item Location', 'Tax Rate', 'Tax Inclusive',
+] as const;
+
+const getSpreadsheetValue = (row: Record<string, unknown>, ...keys: string[]) => {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return '';
+};
+
+const parseTaxRate = (value: unknown) => {
+  if (typeof value === 'number') return value;
+  const match = String(value ?? '').match(/(\d+(?:\.\d+)?)\s*%?/);
+  return match ? Number(match[1]) : 0;
+};
+
+const parseInclusiveTax = (value: unknown) => ['yes', 'y', 'true', '1']
+  .includes(String(value ?? '').trim().toLowerCase());
+
 export async function getFyStartMonth(): Promise<number> {
   try {
     const { getDB } = await import('@/lib/db');
@@ -79,6 +102,7 @@ export default function Settings() {
 
   // Excel export state
   const [exporting, setExporting] = useState(false);
+  const [exportingVyapar, setExportingVyapar] = useState(false);
 
   // Excel import state
   const [importing, setImporting] = useState(false);
@@ -479,9 +503,50 @@ export default function Settings() {
       alert(`✅ Excel export downloaded successfully!\n\nFile: ${fileName}\nSheets: Items, Parties, Transactions, Transaction Items${orders.length > 0 ? ', Order Book' : ''}`);
     } catch (e: any) {
       console.error(e);
-      alert('❌ Error exporting to Excel: ' + e.message);
+      alert('❌ Error: ' + e.message);
     } finally {
       setExporting(false);
+    }
+  };
+
+  // ── Export items in Vyapar-compatible format ─────────────────────────────────
+  const handleExportVyapar = async () => {
+    setExportingVyapar(true);
+    try {
+      const XLSX = await import('xlsx');
+      const db = await getDB();
+      const items = await db.select<any[]>('SELECT * FROM items ORDER BY name');
+
+      // This exactly follows the supplied Vyapar item-import template.
+      const rows = items.map(r => ({
+        'Item Code': `MED-${r.id}`,
+        'Item Name': r.name || '',
+        'HSN': r.hsn || '',
+        'Sale Price': Number(r.sale_price) || 0,
+        'Purchase Price': Number(r.purchase_price) || 0,
+        'Discount Type': 'Discount %',
+        'Sale Discount': Number(r.discount) || 0,
+        // Vyapar imports this field as the available opening inventory.
+        'Opening Stock Quantity': Number(r.current_stock) || 0,
+        'Minimum Stock Quantity': Number(r.min_stock) || 0,
+        'Item Location': '',
+        'Tax Rate': `IGST@${Number(r.tax_rate) || 0}%`,
+        'Tax Inclusive': r.inclusive_tax ? 'Y' : 'N',
+      }));
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(rows, { header: [...VYAPAR_ITEM_HEADERS] });
+      XLSX.utils.book_append_sheet(wb, ws, 'Sheet0');
+      const storeName = activeStore?.name?.replace(/[^a-z0-9]/gi, '_') || 'MediFlow';
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const fileName = `${storeName}_Vyapar_Items_${dateStr}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+      alert(`✅ Vyapar export downloaded!\n\nFile: ${fileName}\n${rows.length} items exported in Vyapar format.`);
+    } catch (e: any) {
+      console.error(e);
+      alert('❌ Error: ' + e.message);
+    } finally {
+      setExportingVyapar(false);
     }
   };
 
@@ -498,41 +563,63 @@ export default function Settings() {
       let importedItems = 0, importedParties = 0, importedTxns = 0, importedTxnItems = 0, importedOrders = 0;
 
       // ── Sheet 1: Items ────────────────────────────────────────────
-      const itemSheet = wb.Sheets['Items (Inventory)'] || wb.Sheets['Items'];
+      // Vyapar's supplied template stores its item sheet as "Sheet0".
+      const itemSheet = wb.Sheets['Items (Inventory)'] || wb.Sheets['Items'] || wb.Sheets['Sheet0'];
       if (itemSheet) {
         setImportMsg('Importing items...');
         const rows = XLSX.utils.sheet_to_json<any>(itemSheet);
         for (const r of rows) {
-          const name = (r['Item Name'] || '').toString().trim();
+          const name = String(getSpreadsheetValue(r, 'Item Name', 'Item name*', 'name')).trim();
           if (!name) continue;
-          await db.execute(
-            `INSERT INTO items (name, hsn, category, unit, sale_price, purchase_price, current_stock, min_stock, opening_stock, tax_rate, discount, inclusive_tax, tabs_per_strip, strips_per_box)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-             ON CONFLICT(name) DO UPDATE SET
-               hsn=excluded.hsn, category=excluded.category, unit=excluded.unit,
-               sale_price=excluded.sale_price, purchase_price=excluded.purchase_price,
-               current_stock=excluded.current_stock, min_stock=excluded.min_stock,
-               opening_stock=excluded.opening_stock, tax_rate=excluded.tax_rate,
-               discount=excluded.discount, inclusive_tax=excluded.inclusive_tax,
-               tabs_per_strip=excluded.tabs_per_strip, strips_per_box=excluded.strips_per_box`,
-            [
-              name,
-              r['HSN Code'] || '',
-              r['Category'] || '',
-              r['Unit'] || 'TAB',
-              Number(r['Sale Price (₹)']) || 0,
-              Number(r['Purchase Price (₹)']) || 0,
-              Number(r['Current Stock']) || 0,
-              Number(r['Min Stock']) || 0,
-              Number(r['Opening Stock']) || 0,
-              Number(r['Tax Rate (%)']) || 0,
-              Number(r['Discount (%)']) || 0,
-              (r['Inclusive Tax'] || '').toLowerCase() === 'yes' ? 1 : 0,
-              Number(r['Tabs/Strip']) || 10,
-              Number(r['Strips/Box']) || 10,
-            ]
-          );
-          importedItems++;
+          const vals = [
+            name,
+            getSpreadsheetValue(r, 'HSN', 'HSN Code', 'Item Code', 'hsn'),
+            getSpreadsheetValue(r, 'Category', 'category'),
+            getSpreadsheetValue(r, 'Unit', 'Base Unit (x)', 'unit') || 'TAB',
+            Number(getSpreadsheetValue(r, 'Sale Price', 'Sale price', 'Sale Price (₹)', 'sale_price')) || 0,
+            Number(getSpreadsheetValue(r, 'Purchase Price', 'Purchase price', 'Purchase Price (₹)', 'purchase_price')) || 0,
+            Number(getSpreadsheetValue(r, 'Current Stock', 'Current stock quantity', 'current_stock', 'Opening Stock Quantity')) || 0,
+            Number(getSpreadsheetValue(r, 'Min Stock', 'Minimum Stock Quantity', 'Minimum stock quantity', 'min_stock')) || 0,
+            Number(getSpreadsheetValue(r, 'Opening Stock', 'Opening Stock Quantity', 'opening_stock')) || 0,
+            parseTaxRate(getSpreadsheetValue(r, 'Tax Rate', 'Tax Rate (%)', 'tax_rate')),
+            Number(getSpreadsheetValue(r, 'Sale Discount', 'Discount (%)', 'discount')) || 0,
+            parseInclusiveTax(getSpreadsheetValue(r, 'Tax Inclusive', 'Inclusive Of Tax', 'Inclusive Tax', 'inclusive_tax')) ? 1 : 0,
+            Number(getSpreadsheetValue(r, 'Tabs/Strip', 'tabs_per_strip')) || 10,
+            Number(getSpreadsheetValue(r, 'Strips/Box', 'strips_per_box')) || 10,
+          ];
+          try {
+            await db.execute(
+              `INSERT INTO items (name,hsn,category,unit,sale_price,purchase_price,current_stock,min_stock,opening_stock,tax_rate,discount,inclusive_tax,tabs_per_strip,strips_per_box)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+               ON CONFLICT(name) DO UPDATE SET
+                 hsn=excluded.hsn, category=excluded.category, unit=excluded.unit,
+                 sale_price=excluded.sale_price, purchase_price=excluded.purchase_price,
+                 current_stock=excluded.current_stock, min_stock=excluded.min_stock,
+                 opening_stock=excluded.opening_stock, tax_rate=excluded.tax_rate,
+                 discount=excluded.discount, inclusive_tax=excluded.inclusive_tax,
+                 tabs_per_strip=excluded.tabs_per_strip, strips_per_box=excluded.strips_per_box`,
+              vals
+            );
+            importedItems++;
+          } catch {
+            try {
+              const ex = await db.select<{id:number}[]>(`SELECT id FROM items WHERE LOWER(TRIM(name))=LOWER(TRIM($1)) LIMIT 1`, [name]);
+              if (ex.length > 0) {
+                await db.execute(
+                  `UPDATE items SET hsn=$2,category=$3,unit=$4,sale_price=$5,purchase_price=$6,current_stock=$7,min_stock=$8,opening_stock=$9,tax_rate=$10,discount=$11,inclusive_tax=$12,tabs_per_strip=$13,strips_per_box=$14 WHERE id=$1`,
+                  [ex[0].id, ...vals.slice(1)]
+                );
+              } else {
+                await db.execute(
+                  `INSERT INTO items (name,hsn,category,unit,sale_price,purchase_price,current_stock,min_stock,opening_stock,tax_rate,discount,inclusive_tax,tabs_per_strip,strips_per_box) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+                  vals
+                );
+              }
+              importedItems++;
+            } catch (inner) {
+              console.warn('[Import] Item failed:', name, inner);
+            }
+          }
         }
       }
 
@@ -626,11 +713,13 @@ export default function Settings() {
         let skippedTxnItems = 0;
         const clearedTxns = new Set<number>();
         const importedRows = new Set<string>(); // To deduplicate Excel rows
+        const autoCreatedItemIds = new Set<number>();
+        const itemIdByNormalizedName = new Map<string, number>();
         for (const r of rows) {
           try {
             const invoiceNo = (r['Invoice No']||'').toString().trim();
             const type = (r['Type']||'').toLowerCase();
-            if (!invoiceNo) continue;
+            if (!invoiceNo || !['purchase', 'sale'].includes(type)) continue;
             const txnRes = await db.select<{id:number}[]>(`SELECT id FROM transactions WHERE invoice_no=$1 AND type=$2 LIMIT 1`, [invoiceNo, type]);
             if (!txnRes.length) { skippedTxnItems++; continue; }
             const txnId = txnRes[0].id;
@@ -641,12 +730,41 @@ export default function Settings() {
               clearedTxns.add(txnId);
             }
 
-            // Resolve item id — allow null if item doesn't exist on this machine
+            // Every valid transaction line must have a catalog item. Historical
+            // exports can contain names absent from the Items sheet, so create
+            // that catalog record before writing the line item.
             let itemId: number | null = null;
             const itemName = (r['Item Name']||'').toString().trim();
             if (itemName) {
-              const iRes = await db.select<{id:number}[]>(`SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER($1) LIMIT 1`,[itemName]);
-              if (iRes.length) itemId = iRes[0].id;
+              const normalizedName = itemName.toLowerCase().replace(/\s+/g, ' ').trim();
+              itemId = itemIdByNormalizedName.get(normalizedName) ?? null;
+              if (!itemId) {
+                const iRes = await db.select<{id:number}[]>(
+                  `SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+                  [itemName]
+                );
+                if (iRes.length) {
+                  itemId = iRes[0].id;
+                } else {
+                  const price = Number(r['Price (₹)']) || 0;
+                  const unit = String(r['Unit'] || 'TAB').trim() || 'TAB';
+                  const created = await db.execute(
+                    `INSERT INTO items (name, unit, purchase_price, sale_price, current_stock, opening_stock, tax_rate, discount)
+                     VALUES ($1,$2,$3,$4,0,0,$5,$6)`,
+                    [
+                      itemName,
+                      unit,
+                      type === 'purchase' ? price : 0,
+                      type === 'sale' ? price : 0,
+                      Number(r['Tax (%)']) || 0,
+                      Number(r['Discount (%)']) || 0,
+                    ]
+                  );
+                  itemId = Number((created as { lastInsertId?: number }).lastInsertId);
+                  autoCreatedItemIds.add(itemId);
+                }
+                if (itemId) itemIdByNormalizedName.set(normalizedName, itemId);
+              }
             }
 
             const qty = Number(r['Quantity'])||0;
@@ -674,6 +792,13 @@ export default function Settings() {
                 r['Expiry Date']||'',
               ]
             );
+            if (itemId && autoCreatedItemIds.has(itemId)) {
+              const stockDelta = type === 'purchase' ? qty : -qty;
+              await db.execute(
+                `UPDATE items SET current_stock = current_stock + $1 WHERE id = $2`,
+                [stockDelta, itemId]
+              );
+            }
             importedTxnItems++;
           } catch (rowErr: any) {
             console.warn('[Import] Skipped transaction item row:', rowErr.message);
@@ -712,6 +837,73 @@ export default function Settings() {
       setImportMsg('❌ Import failed: ' + e.message);
     } finally {
       setImporting(false);
+    }
+  };
+
+  const repairCatalogItemsFromBills = async () => {
+    try {
+      const db = await getDB();
+      const lines = await db.select<Array<{
+        id: number; item_id: number | null; item_name: string | null; unit: string | null;
+        price: number | null; quantity: number | null; tax_pct: number | null;
+        discount_pct: number | null; type: string;
+      }>>(
+        `SELECT ti.id, ti.item_id, ti.item_name, ti.unit, ti.price, ti.quantity,
+                ti.tax_pct, ti.discount_pct, t.type
+         FROM transaction_items ti
+         JOIN transactions t ON t.id = ti.txn_id
+         LEFT JOIN items i ON i.id = ti.item_id
+         WHERE TRIM(COALESCE(ti.item_name, '')) <> ''
+           AND (ti.item_id IS NULL OR i.id IS NULL)`
+      );
+
+      if (lines.length === 0) {
+        alert('All bill items are already linked to the Items catalog.');
+        return;
+      }
+
+      const catalogRows = await db.select<Array<{ id: number; name: string }>>('SELECT id, name FROM items');
+      const itemByName = new Map(catalogRows.map(item => [item.name.toLowerCase().replace(/\s+/g, ' ').trim(), item.id]));
+      const pending = new Map<string, { name: string; unit: string; purchase: number; sale: number; stock: number; tax: number; discount: number; lineIds: number[] }>();
+
+      for (const line of lines) {
+        const name = line.item_name!.trim();
+        const key = name.toLowerCase().replace(/\s+/g, ' ').trim();
+        const entry = pending.get(key) ?? {
+          name, unit: line.unit?.trim() || 'TAB', purchase: 0, sale: 0, stock: 0,
+          tax: Number(line.tax_pct) || 0, discount: Number(line.discount_pct) || 0, lineIds: [],
+        };
+        const quantity = Number(line.quantity) || 0;
+        const price = Number(line.price) || 0;
+        if (line.type === 'purchase') { entry.purchase = price || entry.purchase; entry.stock += quantity; }
+        if (line.type === 'sale') { entry.sale = price || entry.sale; entry.stock -= quantity; }
+        entry.lineIds.push(line.id);
+        pending.set(key, entry);
+      }
+
+      let created = 0;
+      for (const [key, entry] of pending) {
+        let itemId = itemByName.get(key);
+        if (!itemId) {
+          const result = await db.execute(
+            `INSERT INTO items (name, unit, purchase_price, sale_price, current_stock, opening_stock, tax_rate, discount)
+             VALUES ($1,$2,$3,$4,$5,$5,$6,$7)`,
+            [entry.name, entry.unit, entry.purchase, entry.sale, entry.stock, entry.tax, entry.discount]
+          );
+          itemId = Number((result as { lastInsertId?: number }).lastInsertId);
+          itemByName.set(key, itemId);
+          created++;
+        }
+        for (const lineId of entry.lineIds) {
+          await db.execute('UPDATE transaction_items SET item_id = $1 WHERE id = $2', [itemId, lineId]);
+        }
+      }
+
+      alert(`Repaired ${lines.length} bill lines and created ${created} missing catalog items.`);
+      handleRefreshStats();
+    } catch (e: any) {
+      console.error('[Catalog repair] Failed:', e);
+      alert('Could not repair missing catalog items: ' + e.message);
     }
   };
 
@@ -839,14 +1031,20 @@ export default function Settings() {
                       SET item_name = LOWER((SELECT name FROM items WHERE items.id = transaction_items.item_id))
                       WHERE (item_name IS NULL OR item_name = '') AND item_id IS NOT NULL;
                     `);
-                    alert('Successfully repaired missing party data in the database!');
+                    alert('Successfully repaired missing line-item names in the database!');
                   } catch (e: any) {
                     alert('Error repairing data: ' + e.message);
                   }
                 }}
                 className="bg-brand text-white px-3 py-1.5 rounded text-xs font-semibold hover:bg-brand/90 my-auto shadow-sm whitespace-nowrap"
               >
-                Fix Missing Party Data
+                Fix Missing Line Names
+              </button>
+              <button
+                onClick={repairCatalogItemsFromBills}
+                className="bg-emerald-600 text-white px-3 py-1.5 rounded text-xs font-semibold hover:bg-emerald-700 my-auto shadow-sm whitespace-nowrap"
+              >
+                Add Missing Items from Bills
               </button>
             </div>
             <Migration />
@@ -1286,6 +1484,28 @@ export default function Settings() {
                     >
                       {exporting ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
                       {exporting ? 'Exporting...' : 'Export to Excel (.xlsx)'}
+                    </button>
+                  </div>
+
+                  {/* Vyapar Export Card */}
+                  <div className="p-4 rounded-xl border border-orange-200 bg-orange-50/30 flex flex-col justify-between hover:border-orange-300 hover:bg-orange-50/60 transition-colors md:col-span-2">
+                    <div className="space-y-1">
+                      <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                        <FileDown size={16} className="text-orange-600" />
+                        Export Items for Vyapar App
+                        <span className="ml-1 text-[10px] font-bold uppercase tracking-wider text-orange-600 bg-orange-100 px-2 py-0.5 rounded-full">VYAPAR</span>
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Export all your items in the exact Vyapar-compatible format (.xlsx) — ready to import directly into Vyapar. Includes item name, MRP, sale/purchase price, stock, HSN, tax rate, and more.
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleExportVyapar}
+                      disabled={exportingVyapar || syncing}
+                      className="mt-4 w-full flex items-center justify-center gap-2 bg-orange-600 hover:bg-orange-700 text-white font-bold py-2 px-4 rounded-lg text-sm transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {exportingVyapar ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
+                      {exportingVyapar ? 'Exporting...' : 'Export Items for Vyapar App'}
                     </button>
                   </div>
 

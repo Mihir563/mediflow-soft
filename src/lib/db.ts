@@ -245,10 +245,51 @@ export const initDB = async () => {
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_transactions_created ON transactions(created_at)`);
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_txn_items_txn ON transaction_items(txn_id)`);
   await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_txn_items_item ON transaction_items(item_id)`);
-  await dbInstance.execute(`CREATE INDEX IF NOT EXISTS idx_txn_items_batch ON transaction_items(batch_no)`);
+  // Auto-Reconcile unlinked transaction_items into items catalog
+  try {
+    // 1. Link unlinked transaction_items to items table by case-insensitive name match
+    await dbInstance.execute(`
+      UPDATE transaction_items
+      SET item_id = (
+        SELECT i.id FROM items i
+        WHERE LOWER(TRIM(i.name)) = LOWER(TRIM(transaction_items.item_name))
+        LIMIT 1
+      )
+      WHERE item_id IS NULL AND item_name IS NOT NULL AND TRIM(item_name) != ''
+    `);
+
+    // 2. Auto-create catalog entries for any item_names in transaction_items that don't exist in items
+    const missingItems = await dbInstance.select<{ item_name: string; unit?: string; price?: number; tax_pct?: number; discount_pct?: number }[]>(`
+      SELECT item_name, MAX(unit) as unit, AVG(price) as price, MAX(tax_pct) as tax_pct, MAX(discount_pct) as discount_pct
+      FROM transaction_items
+      WHERE item_id IS NULL AND item_name IS NOT NULL AND TRIM(item_name) != ''
+      GROUP BY LOWER(TRIM(item_name))
+    `);
+
+    for (const item of missingItems) {
+      if (!item.item_name || !item.item_name.trim()) continue;
+      const cleanName = item.item_name.trim();
+      const priceVal = Number(item.price) || 0;
+      const res = await dbInstance.execute(
+        `INSERT INTO items (name, unit, purchase_price, sale_price, current_stock, min_stock, opening_stock, tax_rate, discount, tabs_per_strip, strips_per_box)
+         VALUES ($1, $2, $3, $4, 0, 0, 0, $5, $6, 10, 10)`,
+        [cleanName, item.unit || 'TAB', priceVal, priceVal, Number(item.tax_pct) || 0, Number(item.discount_pct) || 0]
+      );
+      const newId = (res as { lastInsertId?: number }).lastInsertId;
+      if (newId) {
+        await dbInstance.execute(
+          `UPDATE transaction_items SET item_id = $1 WHERE LOWER(TRIM(item_name)) = LOWER(TRIM($2)) AND item_id IS NULL`,
+          [newId, cleanName]
+        );
+      }
+    }
+  } catch (e) {
+    console.error("Failed to auto-reconcile transaction items:", e);
+  }
 
     return dbInstance!;
   })();
+
 
   try {
     return await dbInitPromise;

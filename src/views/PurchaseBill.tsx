@@ -520,7 +520,7 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
           // Auto-create or find existing item if typed manually (no itemId)
           if (!resolvedItemId && row.name.trim()) {
             const existing = await db.select<any[]>(
-              `SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER($1) LIMIT 1`,
+              `SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
               [row.name.trim()]
             );
             if (existing.length > 0) {
@@ -596,7 +596,7 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
           if (!resolvedItemId && row.name.trim()) {
             // Try to find existing item by name first
             const existing = await db.select<any[]>(
-              `SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER($1) LIMIT 1`,
+              `SELECT id FROM items WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
               [row.name.trim()]
             );
             if (existing.length > 0) {
