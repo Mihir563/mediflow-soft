@@ -3,7 +3,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { getDB } from '@/lib/db';
 import { Search, X, FileText, Package, Users } from 'lucide-react';
 
-interface GlobalSearchProps { onNavigate?: (page: string, query?: string) => void; }
+interface GlobalSearchProps {
+  onNavigate?: (page: string, query?: string, txnId?: number, txnType?: string) => void;
+}
 
 const normalizeSql = (column: string) =>
   `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${column}, ''), ' ', ''), '.', ''), '-', ''), '/', ''), '(', ''), ')', ''))`;
@@ -197,7 +199,10 @@ export default function GlobalSearch({ onNavigate }: GlobalSearchProps) {
                 <div>
                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-1.5">Transactions</p>
                   {results.transactions.map(t => (
-                    <button key={t.id} onClick={() => { onNavigate?.('reports'); setOpen(false); setQuery(''); }}
+                    <button key={t.id} onClick={() => {
+                      onNavigate?.(t.type === 'sale' ? 'sale' : 'purchase', undefined, t.id, t.type);
+                      setOpen(false); setQuery('');
+                    }}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-purple-50 text-left transition-colors">
                       <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center flex-shrink-0">
                         <FileText size={15} className="text-purple-600" />

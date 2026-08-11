@@ -1023,6 +1023,33 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
                         onKeyDown={e => handleFieldArrow(e, row.rowId, 'price')}
                         className="w-full h-6 border-0 border-b border-slate-200 px-1.5 text-right font-mono text-xs bg-transparent focus:outline-none focus:border-brand focus:bg-white"
                       />
+                      {(() => {
+                        const p = Number(row.price) || 0;
+                        const tps = Number(row.tabsPerStrip) || 10;
+                        const spb = Number(row.stripsPerBox) || 10;
+                        const unit = row.unit || 'TAB';
+                        if (p <= 0) return null;
+                        if (unit === 'TAB') {
+                          const perStrip = p * tps;
+                          const perBox = perStrip * spb;
+                          return (
+                            <div className="text-[9px] text-slate-400 text-right leading-tight px-1 mt-0.5">
+                              <span className="text-blue-400 font-semibold">₹{perStrip.toFixed(2)}/S</span>
+                              <span className="mx-0.5 text-slate-300">·</span>
+                              <span className="text-green-500 font-semibold">₹{perBox.toFixed(2)}/B</span>
+                            </div>
+                          );
+                        }
+                        if (unit === 'STRIP') {
+                          const perBox = p * spb;
+                          return (
+                            <div className="text-[9px] text-green-500 font-semibold text-right leading-tight px-1 mt-0.5">
+                              ₹{perBox.toFixed(2)}/BOX
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </td>
                     <td className="px-0.5 py-0.5 align-middle border-r border-slate-100">
                       <input type="text" data-row={row.rowId} data-field="qty"

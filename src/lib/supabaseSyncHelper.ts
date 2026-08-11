@@ -146,24 +146,40 @@ export async function syncTransactionToCloud(
     const t = txns[0];
     const txnUUID = stableUUID('transactions', localTxnId);
 
-    // 2. Resolve or upsert the party
+    // 2. Resolve or upsert the party — look up by (store_id, name) first so we
+    //    reuse an existing cloud UUID (e.g. party created from mobile) and avoid
+    //    a dangling FK that would show "Unknown" on mobile.
     let partyUUID: string | null = null;
+    const upsertParty = async (p: any): Promise<string> => {
+      // First try to find an existing cloud party by name
+      const { data: existing } = await supabase
+        .from('parties')
+        .select('id')
+        .eq('store_id', storeId)
+        .ilike('name', p.name.trim())
+        .limit(1)
+        .maybeSingle();
+      if (existing?.id) return existing.id;
+      // Not found → insert with stable UUID
+      const cloudId = stableUUID('parties', p.id);
+      await supabase.from('parties').upsert({
+        id: cloudId,
+        store_id: storeId,
+        name: p.name,
+        phone: p.phone || null,
+        gstin: p.gstin || null,
+        address: p.address || null,
+        type: ['customer', 'vendor'].includes(p.type) ? p.type : 'customer',
+        opening_balance: Number(p.opening_balance) || 0,
+        is_active: true,
+      }, { onConflict: 'id' });
+      return cloudId;
+    };
+
     if (t.party_id) {
       const parties = await db.select<any[]>(`SELECT * FROM parties WHERE id = $1`, [t.party_id]);
       if (parties.length) {
-        const p = parties[0];
-        partyUUID = stableUUID('parties', p.id);
-        await supabase.from('parties').upsert({
-          id: partyUUID,
-          store_id: storeId,
-          name: p.name,
-          phone: p.phone || null,
-          gstin: p.gstin || null,
-          address: p.address || null,
-          type: ['customer', 'vendor'].includes(p.type) ? p.type : 'customer',
-          opening_balance: Number(p.opening_balance) || 0,
-          is_active: true,
-        }, { onConflict: 'id' });
+        partyUUID = await upsertParty(parties[0]);
       }
     } else {
       // party_id is null — try to repair via invoice-prefix matching from other transactions
@@ -181,24 +197,11 @@ export async function syncTransactionToCloud(
           );
           if (similar.length && similar[0].party_id) {
             const resolvedLocalId = similar[0].party_id;
-            // Persist fix to local SQLite
             await db.execute(`UPDATE transactions SET party_id = $1 WHERE id = $2`, [resolvedLocalId, localTxnId]);
             t.party_id = resolvedLocalId;
             const parties2 = await db.select<any[]>(`SELECT * FROM parties WHERE id = $1`, [resolvedLocalId]);
             if (parties2.length) {
-              const p = parties2[0];
-              partyUUID = stableUUID('parties', p.id);
-              await supabase.from('parties').upsert({
-                id: partyUUID,
-                store_id: storeId,
-                name: p.name,
-                phone: p.phone || null,
-                gstin: p.gstin || null,
-                address: p.address || null,
-                type: ['customer', 'vendor'].includes(p.type) ? p.type : 'customer',
-                opening_balance: Number(p.opening_balance) || 0,
-                is_active: true,
-              }, { onConflict: 'id' });
+              partyUUID = await upsertParty(parties2[0]);
             }
           }
         }
@@ -772,42 +775,67 @@ export async function restoreCloudToLocal(
 ): Promise<void> {
   const db = await getDB();
 
-  // 1. Download all data from Supabase
+  // Helper: paginate-download all rows from a Supabase table for this store
+  const fetchAllRows = async (table: string, eq_col = 'store_id'): Promise<any[]> => {
+    const PAGE = 1000;
+    let all: any[] = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .eq(eq_col, storeId)
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`Restore ${table} error: ${error.message}`);
+      if (!data || data.length === 0) break;
+      all = [...all, ...data];
+      if (data.length < PAGE) break;
+      from += PAGE;
+    }
+    return all;
+  };
+
+  // 1. Download all data from Supabase (paginated to handle >1000 rows)
   onProgress('Downloading cloud items...', 10, 100);
-  const { data: cloudItems, error: e1 } = await supabase.from('items').select('*').eq('store_id', storeId);
-  if (e1) throw new Error(`Restore items error: ${e1.message}`);
+  const cloudItems = await fetchAllRows('items');
 
   onProgress('Downloading cloud parties...', 20, 100);
-  const { data: cloudParties, error: e2 } = await supabase.from('parties').select('*').eq('store_id', storeId);
-  if (e2) throw new Error(`Restore parties error: ${e2.message}`);
+  const cloudParties = await fetchAllRows('parties');
 
   onProgress('Downloading cloud transactions...', 30, 100);
-  const { data: cloudTxns, error: e3 } = await supabase.from('transactions').select('*').eq('store_id', storeId);
-  if (e3) throw new Error(`Restore transactions error: ${e3.message}`);
+  const cloudTxns = await fetchAllRows('transactions');
 
-  // Fetch transaction line items
+  // Fetch transaction line items (chunked by txn_id, each chunk also paginated)
   onProgress('Downloading cloud line items...', 40, 100);
   const cloudTxnItems: any[] = [];
   if (cloudTxns && cloudTxns.length > 0) {
     const txnChunks = chunkArray(cloudTxns.map(t => t.id), 50);
     for (const chunk of txnChunks) {
-      const { data, error } = await supabase.from('transaction_items').select('*').in('txn_id', chunk);
-      if (error) throw new Error(`Restore txn items error: ${error.message}`);
-      if (data) cloudTxnItems.push(...data);
+      const PAGE = 1000;
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('transaction_items')
+          .select('*')
+          .in('txn_id', chunk)
+          .range(from, from + PAGE - 1);
+        if (error) throw new Error(`Restore txn items error: ${error.message}`);
+        if (!data || data.length === 0) break;
+        cloudTxnItems.push(...data);
+        if (data.length < PAGE) break;
+        from += PAGE;
+      }
     }
   }
 
   onProgress('Downloading cloud special rates...', 50, 100);
-  const { data: cloudRates, error: e4 } = await supabase.from('party_special_rates').select('*').eq('store_id', storeId);
-  if (e4) throw new Error(`Restore rates error: ${e4.message}`);
+  const cloudRates = await fetchAllRows('party_special_rates');
 
   onProgress('Downloading cloud order book...', 53, 100);
-  const { data: cloudOrders, error: e5 } = await supabase.from('order_book').select('*').eq('store_id', storeId);
-  if (e5) throw new Error(`Restore order book error: ${e5.message}`);
+  const cloudOrders = await fetchAllRows('order_book');
 
   onProgress('Downloading cloud app settings...', 56, 100);
-  const { data: cloudSettings, error: e6 } = await supabase.from('app_settings').select('*').eq('store_id', storeId);
-  if (e6) throw new Error(`Restore app settings error: ${e6.message}`);
+  const cloudSettings = await fetchAllRows('app_settings');
 
   // 2. Clear local SQLite tables in reverse dependency order
   onProgress('Preparing local database...', 60, 100);

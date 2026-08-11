@@ -383,7 +383,15 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <GlobalSearch onNavigate={(p) => navigate(p as any)} />
+            <GlobalSearch onNavigate={(p, query, txnId, txnType) => {
+                if (txnId !== undefined) {
+                  // Open the specific bill directly in edit mode
+                  if (txnType === 'sale') handleEditSale(txnId);
+                  else handleEditPurchase(txnId);
+                } else {
+                  navigate(p as any, query);
+                }
+              }} />
             <button onClick={() => setShowShortcuts(true)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors">
               <Keyboard size={14} /> Shortcuts
             </button>
