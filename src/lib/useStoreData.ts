@@ -78,7 +78,13 @@ export function useStoreData<T = any>(
 
 // ─── Dashboard stats ──────────────────────────────────────────────────────────
 
-export function useDashboardStats() {
+export interface DashboardFilterOptions {
+  fromDate?: string;
+  toDate?: string;
+  dateType?: 'bill_date' | 'added_date';
+}
+
+export function useDashboardStats(filterOptions: DashboardFilterOptions = {}) {
   const { activeStore } = useAuth();
   const [stats, setStats] = useState({
     todaySales: 0, todayInvoices: 0,
@@ -90,25 +96,55 @@ export function useDashboardStats() {
   const [recentTxns, setRecentTxns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const {
+    fromDate,
+    toDate,
+    dateType = 'bill_date',
+  } = filterOptions;
+
   const load = useCallback(async () => {
     setLoading(true);
 
-    const today = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T')[0];
+    const effectiveFrom = fromDate !== undefined ? fromDate : todayStr;
+    const effectiveTo = toDate !== undefined ? toDate : (fromDate !== undefined ? fromDate : todayStr);
+
+    const filterCol = dateType === 'added_date' ? 'created_at' : 'date';
 
     // ── Cloud mode (logged in to Supabase store) ─────────────────────────
     if (activeStore) {
       const storeId = activeStore.id;
       try {
+        let saleQ = supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'sale');
+        let purQ = supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'purchase');
+        let recentQ = supabase.from('transactions')
+          .select('id, invoice_no, date, created_at, total_amount, paid_amount, balance_due, type, payment_type, status, party_id, parties(name)')
+          .eq('store_id', storeId);
+
+        if (effectiveFrom) {
+          saleQ = saleQ.gte(filterCol, effectiveFrom);
+          purQ = purQ.gte(filterCol, effectiveFrom);
+          recentQ = recentQ.gte(filterCol, effectiveFrom);
+        }
+        if (effectiveTo) {
+          const upperTo = effectiveTo.includes('T') ? effectiveTo : `${effectiveTo}T23:59:59`;
+          saleQ = saleQ.lte(filterCol, upperTo);
+          purQ = purQ.lte(filterCol, upperTo);
+          recentQ = recentQ.lte(filterCol, upperTo);
+        }
+
+        recentQ = recentQ.order(filterCol, { ascending: false }).limit(50);
+
         const [todaySaleRes, todayPurRes, itemsRes, partiesRes, recentRes, allSaleRes, allPurRes, pendingRes] =
           await Promise.all([
-            supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'sale').gte('date', today),
-            supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'purchase').gte('date', today),
+            saleQ,
+            purQ,
             supabase.from('items').select('id', { count: 'exact', head: true }).eq('store_id', storeId).eq('is_active', true),
             supabase.from('parties').select('id', { count: 'exact', head: true }).eq('store_id', storeId).eq('is_active', true),
-            supabase.from('transactions').select('id, invoice_no, date, created_at, total_amount, paid_amount, balance_due, type, payment_type, status, party_id, parties(name)').eq('store_id', storeId).order('created_at', { ascending: false }).limit(15),
+            recentQ,
             supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'sale'),
             supabase.from('transactions').select('total_amount').eq('store_id', storeId).eq('type', 'purchase'),
-            supabase.from('transactions').select('balance_due').eq('store_id', storeId).eq('status', 'unpaid'),
+            supabase.from('transactions').select('balance_due').eq('store_id', storeId).neq('status', 'paid').gt('balance_due', 0),
           ]);
 
         const sum = (rows: any[]) => rows?.reduce((s, r) => s + (Number(r.total_amount) || 0), 0) ?? 0;
@@ -127,25 +163,22 @@ export function useDashboardStats() {
 
         const cloudTxns = (recentRes.data ?? []).map((t: any) => ({
           ...t,
-          party_name: (t.parties as any)?.name ?? null,
+          party_name: (t.parties as any)?.name ?? 'Walk-in',
         }));
 
-        if (cloudTxns.length > 0) {
-          // Cloud has data — use it directly
+        if (cloudTxns.length > 0 || (recentRes.data && recentRes.data.length === 0)) {
           setRecentTxns(cloudTxns);
         } else {
-          // Cloud has no transactions yet (backup not run, or no data synced yet).
-          // Fall back to local SQLite so dashboard history is never blank when
-          // data exists locally.
+          // Cloud query error or fallback to local SQLite
           try {
             const { getDB } = await import('@/lib/db');
             const db = await getDB();
             const localRows = await db.select<any[]>(
-              `SELECT t.*, p.name as party_name
+              `SELECT t.*, COALESCE(p.name, t.party_name, 'Walk-in') as party_name
                FROM transactions t
                LEFT JOIN parties p ON t.party_id = p.id
                ORDER BY COALESCE(t.created_at, t.date) DESC
-               LIMIT 15`
+               LIMIT 50`
             );
             setRecentTxns(localRows);
           } catch (localErr: any) {
@@ -164,19 +197,40 @@ export function useDashboardStats() {
       const { getDB } = await import('@/lib/db');
       const db = await getDB();
 
+      const sqliteCol = dateType === 'added_date' ? "COALESCE(created_at, date)" : "date";
+
+      let saleSql = `SELECT total_amount FROM transactions WHERE type='sale'`;
+      let purSql = `SELECT total_amount FROM transactions WHERE type='purchase'`;
+      let recentSql = `SELECT t.*, COALESCE(p.name, t.party_name, 'Walk-in') as party_name FROM transactions t LEFT JOIN parties p ON t.party_id = p.id`;
+
+      const params: any[] = [];
+      const whereConds: string[] = [];
+
+      if (effectiveFrom) {
+        params.push(effectiveFrom);
+        whereConds.push(`${sqliteCol} >= $${params.length}`);
+      }
+      if (effectiveTo) {
+        params.push(`${effectiveTo}T23:59:59`);
+        whereConds.push(`${sqliteCol} <= $${params.length}`);
+      }
+
+      if (whereConds.length > 0) {
+        const cond = ` WHERE ` + whereConds.join(' AND ');
+        saleSql += cond;
+        purSql += cond;
+        recentSql += cond;
+      }
+
+      recentSql += ` ORDER BY ${sqliteCol} DESC LIMIT 50`;
+
       const [todaySales, todayPurchases, allItems, allParties, recentTxnsRows, allSales, allPurchases, pending] =
         await Promise.all([
-          db.select<any[]>(`SELECT total_amount FROM transactions WHERE type='sale' AND date >= $1`, [today]),
-          db.select<any[]>(`SELECT total_amount FROM transactions WHERE type='purchase' AND date >= $1`, [today]),
+          db.select<any[]>(saleSql, params),
+          db.select<any[]>(purSql, params),
           db.select<any[]>(`SELECT COUNT(*) as cnt FROM items`),
           db.select<any[]>(`SELECT COUNT(*) as cnt FROM parties`),
-          db.select<any[]>(
-            `SELECT t.*, p.name as party_name
-             FROM transactions t
-             LEFT JOIN parties p ON t.party_id = p.id
-             ORDER BY COALESCE(t.created_at, t.date) DESC
-             LIMIT 15`
-          ),
+          db.select<any[]>(recentSql, params),
           db.select<any[]>(`SELECT total_amount FROM transactions WHERE type='sale'`),
           db.select<any[]>(`SELECT total_amount FROM transactions WHERE type='purchase'`),
           db.select<any[]>(`SELECT balance_due FROM transactions WHERE status='unpaid'`),
@@ -201,7 +255,7 @@ export function useDashboardStats() {
       console.error('[useDashboardStats local]', e.message);
     }
     setLoading(false);
-  }, [activeStore?.id]);
+  }, [activeStore?.id, fromDate, toDate, dateType]);
 
   useEffect(() => { load(); }, [load]);
 

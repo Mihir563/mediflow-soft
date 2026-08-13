@@ -1,8 +1,10 @@
 'use client';
-import { useState, useCallback } from 'react';
-import { useDashboardStats } from '@/lib/useStoreData';
+import { useState, useMemo } from 'react';
+import { useDashboardStats, DashboardFilterOptions } from '@/lib/useStoreData';
 import { useAuth } from '@/lib/AuthContext';
-import { FileText, ShoppingCart, TrendingUp, Package, Users, ArrowUpRight, RefreshCw, Receipt, BarChart2, Wifi, WifiOff, AlertCircle } from 'lucide-react';
+import { FileText, ShoppingCart, TrendingUp, Package, Users, ArrowUpRight, RefreshCw, Receipt, BarChart2, Wifi, WifiOff, AlertCircle, Calendar, Filter } from 'lucide-react';
+import SmartDateInput from '@/components/SmartDateInput';
+import BillDetailModal from '@/components/BillDetailModal';
 
 type Page = 'dashboard' | 'pos' | 'sale' | 'purchase' | 'parties' | 'items' | 'reports' | 'settings' | 'purchase_history' | 'order_book';
 
@@ -11,6 +13,8 @@ interface DashboardProps {
   onEditPurchase?: (txnId: any) => void;
   onEditSale?: (txnId: any) => void;
 }
+
+type DatePreset = 'today' | 'yesterday' | 'week' | 'month' | 'year' | 'all' | 'custom';
 
 const StatusBadge = ({ status }: { status: string }) => {
   const map: Record<string, string> = {
@@ -27,12 +31,163 @@ const StatusBadge = ({ status }: { status: string }) => {
 
 export default function Dashboard({ onNavigate, onEditPurchase, onEditSale }: DashboardProps) {
   const { isOnline, activeStore } = useAuth();
-  const { stats, recentTxns, loading, refetch } = useDashboardStats();
-  const [selectedTxnId, setSelectedTxnId] = useState<string | null>(null);
+  
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  
+  const [preset, setPreset] = useState<DatePreset>('today');
+  const [dateType, setDateType] = useState<'bill_date' | 'added_date'>('bill_date');
+  const [fromDate, setFromDate] = useState(todayStr);
+  const [toDate, setToDate] = useState(todayStr);
+  const [selectedTxnId, setSelectedTxnId] = useState<string | number | null>(null);
+
+  const applyPreset = (p: DatePreset) => {
+    setPreset(p);
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+
+    if (p === 'today') {
+      setFromDate(today);
+      setToDate(today);
+    } else if (p === 'yesterday') {
+      const y = new Date(now);
+      y.setDate(now.getDate() - 1);
+      const yStr = y.toISOString().split('T')[0];
+      setFromDate(yStr);
+      setToDate(yStr);
+    } else if (p === 'week') {
+      const mon = new Date(now);
+      const day = mon.getDay();
+      const diff = mon.getDate() - day + (day === 0 ? -6 : 1);
+      mon.setDate(diff);
+      setFromDate(mon.toISOString().split('T')[0]);
+      setToDate(today);
+    } else if (p === 'month') {
+      const first = new Date(now.getFullYear(), now.getMonth(), 1);
+      setFromDate(first.toISOString().split('T')[0]);
+      setToDate(today);
+    } else if (p === 'year') {
+      const first = new Date(now.getFullYear(), 0, 1);
+      setFromDate(first.toISOString().split('T')[0]);
+      setToDate(today);
+    } else if (p === 'all') {
+      setFromDate('');
+      setToDate('');
+    }
+  };
+
+  const filterOpts: DashboardFilterOptions = useMemo(() => ({
+    fromDate: preset === 'all' ? '' : fromDate,
+    toDate: preset === 'all' ? '' : toDate,
+    dateType,
+  }), [fromDate, toDate, dateType, preset]);
+
+  const { stats, recentTxns, loading, refetch } = useDashboardStats(filterOpts);
+
+  const periodLabel = useMemo(() => {
+    if (preset === 'today') return "Today's Activity";
+    if (preset === 'yesterday') return "Yesterday's Activity";
+    if (preset === 'week') return "This Week's Activity";
+    if (preset === 'month') return "This Month's Activity";
+    if (preset === 'year') return "This Year's Activity";
+    if (preset === 'all') return "All Time Activity";
+    if (fromDate && toDate) return `Activity (${fromDate} to ${toDate})`;
+    return "Activity Overview";
+  }, [preset, fromDate, toDate]);
 
   return (
     <div className="h-full overflow-y-auto bg-slate-50">
       <div className="max-w-6xl mx-auto px-6 py-6 space-y-6">
+
+        {/* ── Top Header & Date Filter Bar */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center text-brand">
+                <Calendar size={18} />
+              </div>
+              <div>
+                <h1 className="text-base font-extrabold text-slate-800 tracking-tight">Dashboard Overview</h1>
+                <p className="text-xs text-slate-400 font-medium">Filter statistics & recent bills by date range</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden bg-slate-50 text-xs font-semibold">
+                <button
+                  onClick={() => setDateType('bill_date')}
+                  className={`px-3 py-1.5 transition-colors ${dateType === 'bill_date' ? 'bg-brand text-white shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}
+                >
+                  Bill Date
+                </button>
+                <button
+                  onClick={() => setDateType('added_date')}
+                  className={`px-3 py-1.5 transition-colors ${dateType === 'added_date' ? 'bg-brand text-white shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'}`}
+                >
+                  Added Date
+                </button>
+              </div>
+
+              <button
+                onClick={refetch}
+                className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-brand hover:border-brand transition-colors bg-white"
+                title="Refresh Dashboard"
+              >
+                <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              </button>
+            </div>
+          </div>
+
+          {/* Presets & Custom Date Pickers */}
+          <div className="flex items-center justify-between flex-wrap gap-3 pt-2 border-t border-slate-100">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {[
+                { id: 'today', label: 'Today' },
+                { id: 'yesterday', label: 'Yesterday' },
+                { id: 'week', label: 'This Week' },
+                { id: 'month', label: 'This Month' },
+                { id: 'year', label: 'This Year' },
+                { id: 'all', label: 'All Time' },
+                { id: 'custom', label: 'Custom' },
+              ].map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => applyPreset(p.id as DatePreset)}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${
+                    preset === p.id
+                      ? 'bg-blue-50 border-brand text-brand font-bold shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Custom Date Pickers */}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-slate-400 font-medium">From:</span>
+                <div className="w-32">
+                  <SmartDateInput
+                    value={fromDate}
+                    onChange={v => { setFromDate(v); setPreset('custom'); }}
+                    className="!h-8 !px-2.5 text-xs font-mono"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-slate-400 font-medium">To:</span>
+                <div className="w-32">
+                  <SmartDateInput
+                    value={toDate}
+                    onChange={v => { setToDate(v); setPreset('custom'); }}
+                    className="!h-8 !px-2.5 text-xs font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* ── Cloud status banner */}
         {!isOnline && (
@@ -52,11 +207,16 @@ export default function Dashboard({ onNavigate, onEditPurchase, onEditSale }: Da
           </div>
         )}
 
+        {/* ── Period Label */}
+        <div className="flex items-center justify-between">
+          <h2 className="text-xs font-extrabold uppercase tracking-widest text-slate-400">{periodLabel}</h2>
+        </div>
+
         {/* ── Top Summary Cards */}
         <div className="grid grid-cols-4 gap-4">
           {[
-            { page: 'sale' as Page, label: "Today's Sales", sub: `${stats.todayInvoices} invoice${stats.todayInvoices !== 1 ? 's' : ''} today`, value: `₹${stats.todaySales.toFixed(0)}`, allTime: stats.totalSalesAllTime, icon: TrendingUp, color: 'emerald' },
-            { page: 'purchase' as Page, label: "Today's Purchases", sub: `${stats.todayPurchaseCount} bill${stats.todayPurchaseCount !== 1 ? 's' : ''} today`, value: `₹${stats.todayPurchases.toFixed(0)}`, allTime: stats.totalPurchasesAllTime, icon: ShoppingCart, color: 'orange' },
+            { page: 'sale' as Page, label: "Sales", sub: `${stats.todayInvoices} invoice${stats.todayInvoices !== 1 ? 's' : ''} in period`, value: `₹${stats.todaySales.toFixed(0)}`, allTime: stats.totalSalesAllTime, icon: TrendingUp, color: 'emerald' },
+            { page: 'purchase' as Page, label: "Purchases", sub: `${stats.todayPurchaseCount} bill${stats.todayPurchaseCount !== 1 ? 's' : ''} in period`, value: `₹${stats.todayPurchases.toFixed(0)}`, allTime: stats.totalPurchasesAllTime, icon: ShoppingCart, color: 'orange' },
             { page: 'items' as Page, label: 'Total Items', sub: 'In inventory', value: String(stats.totalItems), icon: Package, color: 'blue' },
             { page: 'parties' as Page, label: 'Total Parties', sub: 'Customers & vendors', value: String(stats.totalParties), icon: Users, color: 'purple' },
           ].map(card => {
@@ -141,7 +301,7 @@ export default function Dashboard({ onNavigate, onEditPurchase, onEditSale }: Da
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
             <div>
               <h2 className="text-sm font-bold text-slate-800">Recent Transactions</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Latest {recentTxns.length} bills · click any row to view</p>
+              <p className="text-xs text-slate-400 mt-0.5">{recentTxns.length} bills found · click any row to view details</p>
             </div>
             <div className="flex items-center gap-2">
               <button onClick={refetch}
@@ -158,13 +318,13 @@ export default function Dashboard({ onNavigate, onEditPurchase, onEditSale }: Da
           {loading ? (
             <div className="py-12 flex flex-col items-center gap-3 text-slate-400">
               <div className="w-6 h-6 border-2 border-slate-200 border-t-brand rounded-full animate-spin" />
-              <span className="text-sm">Loading from cloud...</span>
+              <span className="text-sm">Loading transactions...</span>
             </div>
           ) : recentTxns.length === 0 ? (
             <div className="py-16 flex flex-col items-center text-slate-400">
               <FileText size={36} className="opacity-20 mb-3" />
-              <p className="text-sm font-medium">No transactions yet</p>
-              <p className="text-xs mt-1">Create a sale or purchase to get started</p>
+              <p className="text-sm font-medium">No transactions found for this period</p>
+              <p className="text-xs mt-1">Try changing your date filter or create a new sale / purchase</p>
             </div>
           ) : (
             <table className="w-full text-sm">
@@ -217,6 +377,16 @@ export default function Dashboard({ onNavigate, onEditPurchase, onEditSale }: Da
           )}
         </div>
       </div>
+
+      {/* ── Bill Detail Modal overlay */}
+      {selectedTxnId && (
+        <BillDetailModal
+          txnId={selectedTxnId}
+          onClose={() => setSelectedTxnId(null)}
+          onEditPurchase={onEditPurchase}
+          onEditSale={onEditSale}
+        />
+      )}
     </div>
   );
 }

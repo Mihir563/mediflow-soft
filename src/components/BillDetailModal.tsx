@@ -1,42 +1,81 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { getDB } from '@/lib/db';
+import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/lib/AuthContext';
 import { X, Edit3, User, Calendar, CreditCard, Hash, FileText, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
 
 interface BillDetailModalProps {
-  txnId: number;
+  txnId: number | string;
   onClose: () => void;
-  onEditPurchase?: (txnId: number) => void;
-  onEditSale?: (txnId: number) => void;
+  onEditPurchase?: (txnId: any) => void;
+  onEditSale?: (txnId: any) => void;
 }
 
 export default function BillDetailModal({ txnId, onClose, onEditPurchase, onEditSale }: BillDetailModalProps) {
+  const { activeStore } = useAuth();
   const [txn, setTxn] = useState<any | null>(null);
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const load = async () => {
+      setLoading(true);
+      let foundTxn = null;
+      let foundItems: any[] = [];
+
       try {
+        const { getDB } = await import('@/lib/db');
         const db = await getDB();
-        const [t] = await db.select<any[]>(
+        const rows = await db.select<any[]>(
           `SELECT t.*, p.name as party_name, p.phone as party_phone, p.gstin as party_gstin
            FROM transactions t LEFT JOIN parties p ON t.party_id = p.id WHERE t.id = $1`,
           [txnId]
         );
-        const its = await db.select<any[]>(
-          `SELECT * FROM transaction_items WHERE txn_id = $1 ORDER BY id ASC`,
-          [txnId]
-        );
-        setTxn(t || null);
-        setItems(its || []);
+        if (rows && rows.length > 0) {
+          foundTxn = rows[0];
+          foundItems = await db.select<any[]>(
+            `SELECT * FROM transaction_items WHERE txn_id = $1 ORDER BY id ASC`,
+            [txnId]
+          );
+        }
       } catch (e) {
-        console.error('BillDetailModal load error:', e);
+        console.warn('BillDetailModal local load warning:', e);
       }
+
+      if (!foundTxn && activeStore) {
+        try {
+          const { data: cloudTxn } = await supabase
+            .from('transactions')
+            .select('*, parties(name, phone, gstin)')
+            .eq('id', String(txnId))
+            .maybeSingle();
+
+          if (cloudTxn) {
+            foundTxn = {
+              ...cloudTxn,
+              party_name: (cloudTxn.parties as any)?.name ?? cloudTxn.party_name ?? 'Walk-in',
+              party_phone: (cloudTxn.parties as any)?.phone ?? null,
+              party_gstin: (cloudTxn.parties as any)?.gstin ?? null,
+            };
+
+            const { data: cloudItems } = await supabase
+              .from('transaction_items')
+              .select('*')
+              .eq('txn_id', String(txnId));
+
+            foundItems = cloudItems || [];
+          }
+        } catch (cloudErr) {
+          console.error('BillDetailModal cloud load error:', cloudErr);
+        }
+      }
+
+      setTxn(foundTxn);
+      setItems(foundItems);
       setLoading(false);
     };
     load();
-  }, [txnId]);
+  }, [txnId, activeStore]);
 
   const isPurchase = txn?.type === 'purchase';
   const canEdit = isPurchase ? !!onEditPurchase : !!onEditSale;
@@ -63,12 +102,12 @@ export default function BillDetailModal({ txnId, onClose, onEditPurchase, onEdit
   };
 
   // Compute totals from items for accuracy
-  const computedSubtotal = items.reduce((s, it) => s + (it.price || 0) * (it.quantity || 0), 0);
-  const computedDiscount = items.reduce((s, it) => {
+  const computedSubtotal = items.reduce((s: number, it: any) => s + (it.price || 0) * (it.quantity || 0), 0);
+  const computedDiscount = items.reduce((s: number, it: any) => {
     const base = (it.price || 0) * (it.quantity || 0);
     return s + base * ((it.discount_pct || 0) / 100);
   }, 0);
-  const computedTax = items.reduce((s, it) => {
+  const computedTax = items.reduce((s: number, it: any) => {
     const base = (it.price || 0) * (it.quantity || 0);
     const disc = base * ((it.discount_pct || 0) / 100);
     return s + (base - disc) * ((it.tax_pct || 0) / 100);
@@ -188,7 +227,7 @@ export default function BillDetailModal({ txnId, onClose, onEditPurchase, onEdit
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {items.map((item, i) => {
+                {items.map((item: any, i: number) => {
                   const base = (item.price || 0) * (item.quantity || 0);
                   const discAmt = base * ((item.discount_pct || 0) / 100);
                   const taxAmt = (base - discAmt) * ((item.tax_pct || 0) / 100);

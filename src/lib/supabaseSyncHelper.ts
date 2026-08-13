@@ -274,8 +274,8 @@ export async function syncTransactionToCloud(
         }
       }
 
-      // Now insert transaction_items — resolve item_id from name if needed
-      const cloudItems = txnItems.map((r, idx) => {
+      // Now upsert transaction_items — idempotent: works even if delete above was partial
+      const cloudItems = txnItems.map((r) => {
         let resolvedItemId: string | null = null;
         if (r.item_id && itemUUIDMap[r.item_id]) {
           resolvedItemId = itemUUIDMap[r.item_id];
@@ -283,8 +283,11 @@ export async function syncTransactionToCloud(
           const localId = nameToItemId[r.item_name?.trim()];
           if (localId && itemUUIDMap[localId]) resolvedItemId = itemUUIDMap[localId];
         }
+        // Use local row ID (r.id) in stableUUID, NOT array index.
+        // Array index shifts when items are reordered in SQLite, causing stale IDs
+        // and silent insert failures on re-sync.
         return {
-          id: stableUUID('transaction_items', `${txnUUID}:${idx}`),
+          id: stableUUID('transaction_items', `${txnUUID}:${r.id}`),
           txn_id: txnUUID,
           item_id: resolvedItemId,
           item_name: r.item_name || null,
@@ -303,7 +306,10 @@ export async function syncTransactionToCloud(
       });
 
       for (const chunk of chunkArray(cloudItems, 50)) {
-        await supabase.from('transaction_items').insert(chunk);
+        const { error: tiErr } = await supabase
+          .from('transaction_items')
+          .upsert(chunk, { onConflict: 'id' });
+        if (tiErr) console.warn('[CloudSync] transaction_items upsert error:', tiErr.message);
       }
     }
   } catch (err) {
@@ -651,18 +657,10 @@ export async function backupLocalToCloud(
   // ── 9. Upload Transaction Items ────────────────────────────────────────────
   const validTxnItems = localTxnItems.filter(r => txnMap[r.txn_id]);
   if (validTxnItems.length > 0) {
-    const byTxn: Record<string, any[]> = {};
-    validTxnItems.forEach(r => {
-      const txnUuid = txnMap[r.txn_id];
-      if (!byTxn[txnUuid]) byTxn[txnUuid] = [];
-      byTxn[txnUuid].push(r);
-    });
-
     const cloudTxnItems = validTxnItems.map(r => {
       const txnUuid = txnMap[r.txn_id];
-      const rowIdx = byTxn[txnUuid].indexOf(r);
       return {
-        id: stableUUID('transaction_items', `${txnUuid}:${rowIdx}`),
+        id: stableUUID('transaction_items', `${txnUuid}:${r.id}`),
         txn_id: txnUuid,
         item_id: r.item_id && itemMap[r.item_id] ? itemMap[r.item_id] : null,
         item_name: r.item_name || null,
