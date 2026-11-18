@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { getDB } from './db';
+import { readPendingSync, writePendingSync, backupDatabase } from './dataFixes';
 
 // Stable, deterministic UUID generation based on table name and old integer ID.
 function stableUUID(table: string, oldId: number | string): string {
@@ -131,18 +132,51 @@ async function upsertItemsByName(storeId: string, localItems: LocalItem[]) {
  * Uses upsert on stable UUIDs so it's safe to call multiple times.
  * Silently fails on network errors — data is always safe locally.
  */
+// Bills whose cloud sync failed (or were fixed by a startup data fix) are remembered
+// per device and retried, so a network blip / expired login never silently loses a bill.
+const readPending = readPendingSync;
+const writePending = writePendingSync;
+export const getPendingSyncCount = () => readPending().length;
+
 export async function syncTransactionToCloud(
   storeId: string,
   localTxnId: number
 ): Promise<void> {
   try {
+    await syncOneTransaction(storeId, localTxnId);
+    writePending(readPending().filter(id => id !== localTxnId));
+  } catch (err) {
+    writePending([...readPending(), localTxnId]);
+    console.warn(`[CloudSync] Bill ${localTxnId} not synced, will retry (data safe locally):`, err);
+    return;
+  }
+  // This one worked, so the connection is fine — retry earlier failures.
+  await flushPendingSyncs(storeId);
+}
+
+/** Push every queued bill to the cloud. Safe to call any time (e.g. on app start). */
+export async function flushPendingSyncs(storeId: string): Promise<void> {
+  for (const id of readPending()) {
+    try {
+      await syncOneTransaction(storeId, id);
+      writePending(readPending().filter(x => x !== id));
+    } catch (err) {
+      console.warn(`[CloudSync] Retry of bill ${id} failed:`, err);
+      break; // likely offline — try again later
+    }
+  }
+}
+
+/** Sync one local bill to the cloud. Throws on any failure. */
+async function syncOneTransaction(storeId: string, localTxnId: number): Promise<void> {
+  {
     const db = await getDB();
 
     // 1. Load the transaction
     const txns = await db.select<any[]>(
       `SELECT * FROM transactions WHERE id = $1`, [localTxnId]
     );
-    if (!txns.length) return;
+    if (!txns.length) return; // bill was deleted locally — nothing to sync
     const t = txns[0];
     const txnUUID = stableUUID('transactions', localTxnId);
 
@@ -152,17 +186,20 @@ export async function syncTransactionToCloud(
     let partyUUID: string | null = null;
     const upsertParty = async (p: any): Promise<string> => {
       // First try to find an existing cloud party by name
-      const { data: existing } = await supabase
+      // Escape LIKE wildcards so names containing % or _ match literally.
+      const exactName = String(p.name).trim().replace(/[\\%_]/g, m => '\\' + m);
+      const { data: existing, error: findErr } = await supabase
         .from('parties')
         .select('id')
         .eq('store_id', storeId)
-        .ilike('name', p.name.trim())
+        .ilike('name', exactName)
         .limit(1)
         .maybeSingle();
+      if (findErr) throw new Error(`party lookup "${p.name}": ${findErr.message}`);
       if (existing?.id) return existing.id;
       // Not found → insert with stable UUID
       const cloudId = stableUUID('parties', p.id);
-      await supabase.from('parties').upsert({
+      const { error: partyErr } = await supabase.from('parties').upsert({
         id: cloudId,
         store_id: storeId,
         name: p.name,
@@ -173,6 +210,7 @@ export async function syncTransactionToCloud(
         opening_balance: Number(p.opening_balance) || 0,
         is_active: true,
       }, { onConflict: 'id' });
+      if (partyErr) throw new Error(`party "${p.name}": ${partyErr.message}`);
       return cloudId;
     };
 
@@ -181,36 +219,13 @@ export async function syncTransactionToCloud(
       if (parties.length) {
         partyUUID = await upsertParty(parties[0]);
       }
-    } else {
-      // party_id is null — try to repair via invoice-prefix matching from other transactions
-      if (t.invoice_no) {
-        const getPrefix = (inv: string) => {
-          let clean = inv.trim().toUpperCase().replace(/^(2[456]\/|2[456]-)/, '');
-          const m = clean.match(/^([A-Z\-_/]+)/);
-          return m?.[1] ?? clean.slice(0, 3);
-        };
-        const prefix = getPrefix(t.invoice_no);
-        if (prefix) {
-          const similar = await db.select<any[]>(
-            `SELECT party_id FROM transactions WHERE invoice_no LIKE $1 AND party_id IS NOT NULL LIMIT 1`,
-            [`${prefix}%`]
-          );
-          if (similar.length && similar[0].party_id) {
-            const resolvedLocalId = similar[0].party_id;
-            await db.execute(`UPDATE transactions SET party_id = $1 WHERE id = $2`, [resolvedLocalId, localTxnId]);
-            t.party_id = resolvedLocalId;
-            const parties2 = await db.select<any[]>(`SELECT * FROM parties WHERE id = $1`, [resolvedLocalId]);
-            if (parties2.length) {
-              partyUUID = await upsertParty(parties2[0]);
-            }
-          }
-        }
-      }
     }
+    // NOTE: never guess a party for a bill with no party_id (e.g. from the invoice
+    // prefix) — that silently mislabelled new bills as the wrong supplier.
 
 
     // 3. Upsert the transaction
-    await supabase.from('transactions').upsert({
+    const { error: txnErr } = await supabase.from('transactions').upsert({
       id: txnUUID,
       store_id: storeId,
       invoice_no: t.invoice_no || null,
@@ -225,15 +240,18 @@ export async function syncTransactionToCloud(
       challan_no: t.challan_no || null,
       description: t.description || null,
     }, { onConflict: 'id' });
+    if (txnErr) throw new Error(`bill "${t.invoice_no}": ${txnErr.message}`);
 
     // 4. Load and upsert transaction items
     const txnItems = await db.select<any[]>(
       `SELECT * FROM transaction_items WHERE txn_id = $1`, [localTxnId]
     );
 
+    // Delete old cloud line items for this bill (also when all lines were removed)
+    const { error: delErr } = await supabase.from('transaction_items').delete().eq('txn_id', txnUUID);
+    if (delErr) throw new Error(`clear lines "${t.invoice_no}": ${delErr.message}`);
+
     if (txnItems.length > 0) {
-      // First, delete old cloud line items for this transaction (re-upsert all)
-      await supabase.from('transaction_items').delete().eq('txn_id', txnUUID);
 
       // Build UUID map for items — include both item_id links AND name-based lookups for null item_ids
       const itemIds = [...new Set(txnItems.map(r => r.item_id).filter(Boolean))];
@@ -309,12 +327,9 @@ export async function syncTransactionToCloud(
         const { error: tiErr } = await supabase
           .from('transaction_items')
           .upsert(chunk, { onConflict: 'id' });
-        if (tiErr) console.warn('[CloudSync] transaction_items upsert error:', tiErr.message);
+        if (tiErr) throw new Error(`bill lines "${t.invoice_no}": ${tiErr.message}`);
       }
     }
-  } catch (err) {
-    // Never block the UI — log silently
-    console.warn('[CloudSync] Real-time sync failed (data safe locally):', err);
   }
 }
 
@@ -353,11 +368,61 @@ export async function syncItemsToCloud(
   return result;
 }
 
+export interface BackupReport {
+  uploaded: Record<string, number>;
+  failed: { table: string; label: string; error: string }[];
+}
+
+/**
+ * Upsert rows in chunks. If a chunk is rejected, retry its rows one by one so a
+ * single bad row never blocks the rest, and record exactly which rows failed.
+ */
+async function upsertWithReport(
+  table: string,
+  rows: Record<string, any>[],
+  onConflict: string,
+  labelOf: (r: Record<string, any>) => string,
+  report: BackupReport,
+  onChunk?: (i: number, n: number) => void
+): Promise<Set<string>> {
+  const okIds = new Set<string>();
+  const chunks = chunkArray(rows, 100);
+  for (let i = 0; i < chunks.length; i++) {
+    onChunk?.(i, chunks.length);
+    const { error } = await supabase.from(table).upsert(chunks[i], { onConflict });
+    if (!error) { chunks[i].forEach(r => okIds.add(String(r.id ?? r.key ?? ''))); continue; }
+    for (const row of chunks[i]) {
+      const { error: rowErr } = await supabase.from(table).upsert(row, { onConflict });
+      if (rowErr) report.failed.push({ table, label: labelOf(row), error: rowErr.message });
+      else okIds.add(String(row.id ?? row.key ?? ''));
+    }
+  }
+  report.uploaded[table] = (report.uploaded[table] || 0) + okIds.size;
+  return okIds;
+}
+
+/** Read id+name of every cloud row in a store table (paged). */
+async function fetchCloudIdsByName(table: 'items' | 'parties', storeId: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from(table).select('id, name').eq('store_id', storeId).range(from, from + 999);
+    if (error) throw new Error(`Could not read cloud ${table}: ${error.message}`);
+    for (const r of data ?? []) map.set(String(r.name ?? '').toLowerCase().trim(), r.id);
+    if (!data || data.length < 1000) break;
+  }
+  return map;
+}
+
+/**
+ * NEVER deletes cloud bills, parties or items. It only adds/updates what the laptop
+ * has, so anything entered on the mobile app (or missing locally) is kept safe.
+ */
 export async function backupLocalToCloud(
   storeId: string,
   onProgress: (phase: string, current: number, total: number) => void
-): Promise<void> {
+): Promise<BackupReport> {
   const db = await getDB();
+  const report: BackupReport = { uploaded: {}, failed: [] };
 
   // ── 1. Read all local data ─────────────────────────────────────────────────
   onProgress('Reading local data...', 0, 100);
@@ -369,7 +434,11 @@ export async function backupLocalToCloud(
   const localOrders   = await db.select<any[]>('SELECT * FROM order_book');
   const localSettings = await db.select<any[]>('SELECT * FROM app_settings');
 
-  // ── 2. Build stable UUID maps with deduplication by normalized name ──────────────
+  // ── 2. Build UUID maps. Reuse the existing cloud id for a name (it may have been
+  //       created on mobile or by an older backup) so nothing clashes or duplicates.
+  onProgress('Reading cloud data...', 3, 100);
+  const cloudItemIds = await fetchCloudIdsByName('items', storeId);
+  const cloudPartyIds = await fetchCloudIdsByName('parties', storeId);
   const itemMap:  Record<number, string> = {};
   const partyMap: Record<number, string> = {};
   const txnMap:   Record<number, string> = {};
@@ -386,7 +455,7 @@ export async function backupLocalToCloud(
   const canonicalLocalItems: any[] = [];
   itemsByNameGroup.forEach((group) => {
     const canonical = group.reduce((newest, item) => Number(item.id) > Number(newest.id) ? item : newest);
-    const cloudUuid = stableUUID('items', canonical.id);
+    const cloudUuid = cloudItemIds.get(String(canonical.name).toLowerCase().trim()) ?? stableUUID('items', canonical.id);
     group.forEach(r => { itemMap[r.id] = cloudUuid; });
     canonicalLocalItems.push(canonical);
   });
@@ -403,50 +472,15 @@ export async function backupLocalToCloud(
   const canonicalLocalParties: any[] = [];
   partiesByNameGroup.forEach((group) => {
     const canonical = group.reduce((newest, item) => Number(item.id) > Number(newest.id) ? item : newest);
-    const cloudUuid = stableUUID('parties', canonical.id);
+    const cloudUuid = cloudPartyIds.get(String(canonical.name).toLowerCase().trim()) ?? stableUUID('parties', canonical.id);
     group.forEach(r => { partyMap[r.id] = cloudUuid; });
     canonicalLocalParties.push(canonical);
   });
 
   localTxns.forEach(r => { txnMap[r.id] = stableUUID('transactions', r.id); });
 
-  // ── 3. Delete ALL existing cloud data safely in chunks until 0 remain ──────
-  onProgress('Clearing existing cloud data...', 5, 100);
-
-  // Helper to wipe table by store_id in chunks
-  const wipeTableByStore = async (table: string) => {
-    while (true) {
-      const { data } = await supabase.from(table).select('id').eq('store_id', storeId).limit(500);
-      if (!data || data.length === 0) break;
-      const ids = data.map((r: any) => r.id);
-      const { error } = await supabase.from(table).delete().in('id', ids);
-      if (error) {
-        console.warn(`[BackupWipe] Error deleting ${table}:`, error.message);
-        break;
-      }
-    }
-  };
-
-  // Wipe transactions & transaction_items in batches
-  while (true) {
-    const { data: txns } = await supabase.from('transactions').select('id').eq('store_id', storeId).limit(200);
-    if (!txns || txns.length === 0) break;
-    const txnIds = txns.map((r: any) => r.id);
-    await supabase.from('transaction_items').delete().in('txn_id', txnIds);
-    await supabase.from('transactions').delete().in('id', txnIds);
-  }
-
-  // Wipe child & parent tables
-  await wipeTableByStore('party_special_rates');
-  await wipeTableByStore('order_book');
-  await wipeTableByStore('items');
-  await wipeTableByStore('parties');
-  await wipeTableByStore('app_settings');
-
-  // Small delay to ensure Supabase finishes clearing
-  await new Promise(resolve => setTimeout(resolve, 500));
-
-  onProgress('Cloud cleared. Uploading...', 12, 100);
+  // ── 3. (Removed) The old backup wiped the whole cloud store first. Never again.
+  onProgress('Uploading...', 12, 100);
 
   // ── 4. Detect optional migrated columns ───────────────────────────────────
   let hasItemVendorCol = true;
@@ -489,12 +523,8 @@ export async function backupLocalToCloud(
       is_active: true,
     }));
 
-    const chunks = chunkArray(cloudItems, 100);
-    for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading items ${i + 1}/${chunks.length}...`, 15 + Math.round(10 * i / chunks.length), 100);
-      const { error } = await supabase.from('items').upsert(chunks[i], { onConflict: 'id' });
-      if (error) throw new Error(`Backup items error: ${error.message}`);
-    }
+    await upsertWithReport('items', cloudItems, 'id', r => `item "${r.name}"`, report,
+      (i, n) => onProgress(`Uploading items ${i + 1}/${n}...`, 15 + Math.round(10 * i / n), 100));
   }
 
   // ── 6. Upload Parties ──────────────────────────────────────────────────────
@@ -511,12 +541,8 @@ export async function backupLocalToCloud(
       is_active: true,
     }));
 
-    const chunks = chunkArray(cloudParties, 100);
-    for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading parties ${i + 1}/${chunks.length}...`, 28 + Math.round(10 * i / chunks.length), 100);
-      const { error } = await supabase.from('parties').upsert(chunks[i], { onConflict: 'id' });
-      if (error) throw new Error(`Backup parties error: ${error.message}`);
-    }
+    await upsertWithReport('parties', cloudParties, 'id', r => `party "${r.name}"`, report,
+      (i, n) => onProgress(`Uploading parties ${i + 1}/${n}...`, 28 + Math.round(10 * i / n), 100));
   }
 
   // ── 7. Back-fill items.default_vendor_id (parties now exist) ──────────────
@@ -564,30 +590,8 @@ export async function backupLocalToCloud(
   // For transactions with NULL party_id, try to resolve via transaction_items history
   const nullPartyTxns = localTxns.filter(t => !t.party_id);
   if (nullPartyTxns.length > 0) {
-    // Build item→party map from transactions that DO have a party_id
-    const itemPartyMap: Record<string, number> = {};
-    for (const ti of localTxnItems) {
-      const txn = localTxns.find(t => t.id === ti.txn_id);
-      if (txn?.party_id && ti.item_name) {
-        itemPartyMap[ti.item_name.toLowerCase().trim()] = txn.party_id;
-      }
-    }
-
-    // Build invoice-prefix→party map
-    const getPrefix = (inv: string) => {
-      if (!inv) return '';
-      let clean = inv.trim().toUpperCase().replace(/^(2[456]\/|2[456]-)/, '');
-      const m = clean.match(/^([A-Z\-_/]+)/);
-      return m?.[1] ?? clean.slice(0, 3);
-    };
-    const prefixPartyMap: Record<string, number> = {};
-    for (const t of localTxns) {
-      if (t.party_id && t.invoice_no) {
-        const prefix = getPrefix(t.invoice_no);
-        if (prefix && !prefixPartyMap[prefix]) prefixPartyMap[prefix] = t.party_id;
-      }
-    }
-
+    // Only an exact party name written in description/challan is trusted.
+    // Guessing from items or invoice prefixes mislabelled bills (e.g. as Om Sai / Krishna).
     let repaired = 0;
     for (const t of nullPartyTxns) {
       let resolvedId: number | null = null;
@@ -601,20 +605,6 @@ export async function backupLocalToCloud(
             ?? partyNameToLocalId[candidate.toLowerCase().replace(/[\s./()-]+/g, '')];
           if (id) { resolvedId = id; break; }
         }
-      }
-
-      // Strategy 2: look at items in this transaction — find a known party for those items
-      if (!resolvedId) {
-        const myItems = localTxnItems.filter(ti => ti.txn_id === t.id);
-        for (const ti of myItems) {
-          const pid = itemPartyMap[ti.item_name?.toLowerCase().trim()];
-          if (pid) { resolvedId = pid; break; }
-        }
-      }
-
-      // Strategy 3: invoice prefix matching
-      if (!resolvedId && t.invoice_no) {
-        resolvedId = prefixPartyMap[getPrefix(t.invoice_no)] ?? null;
       }
 
       if (resolvedId) {
@@ -646,11 +636,12 @@ export async function backupLocalToCloud(
       description: r.description || null,
     }));
 
-    const chunks = chunkArray(cloudTxns, 100);
-    for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading transactions ${i + 1}/${chunks.length}...`, 42 + Math.round(18 * i / chunks.length), 100);
-      const { error } = await supabase.from('transactions').upsert(chunks[i], { onConflict: 'id' });
-      if (error) throw new Error(`Backup transactions error: ${error.message}`);
+    const okTxnIds = await upsertWithReport('transactions', cloudTxns, 'id',
+      r => `${r.type} bill "${r.invoice_no}" (${String(r.date).slice(0, 10)})`, report,
+      (i, n) => onProgress(`Uploading transactions ${i + 1}/${n}...`, 42 + Math.round(18 * i / n), 100));
+    // Only upload lines for bills that actually made it to the cloud.
+    for (const k of Object.keys(txnMap)) {
+      if (!okTxnIds.has(txnMap[Number(k)])) delete txnMap[Number(k)];
     }
   }
 
@@ -678,12 +669,20 @@ export async function backupLocalToCloud(
       };
     });
 
-    const chunks = chunkArray(cloudTxnItems, 100);
-    for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading line items ${i + 1}/${chunks.length}...`, 60 + Math.round(15 * i / chunks.length), 100);
-      const { error } = await supabase.from('transaction_items').upsert(chunks[i], { onConflict: 'id' });
-      if (error) throw new Error(`Backup line items error: ${error.message}`);
+    // Remove cloud lines the laptop no longer has (e.g. a bill was edited) - only for
+    // bills uploaded in this run, and only line ids that are not in the fresh set.
+    const freshIds = new Set(cloudTxnItems.map(r => r.id));
+    const uploadedTxnIds = [...new Set(cloudTxnItems.map(r => r.txn_id))];
+    for (const ids of chunkArray(uploadedTxnIds, 100)) {
+      const { data: existing, error: readErr } = await supabase.from('transaction_items').select('id').in('txn_id', ids);
+      if (readErr) { report.failed.push({ table: 'transaction_items', label: 'stale line check', error: readErr.message }); continue; }
+      const stale = (existing ?? []).map((r: any) => r.id as string).filter(id => !freshIds.has(id));
+      for (const staleChunk of chunkArray(stale, 100)) {
+        await supabase.from('transaction_items').delete().in('id', staleChunk);
+      }
     }
+    await upsertWithReport('transaction_items', cloudTxnItems, 'id', r => `line "${r.item_name}"`, report,
+      (i, n) => onProgress(`Uploading line items ${i + 1}/${n}...`, 60 + Math.round(15 * i / n), 100));
   }
 
   // ── 10. Upload Special Rates ───────────────────────────────────────────────
@@ -703,10 +702,7 @@ export async function backupLocalToCloud(
       }));
 
     if (cloudRates.length > 0) {
-      for (const chunk of chunkArray(cloudRates, 100)) {
-        const { error } = await supabase.from('party_special_rates').upsert(chunk, { onConflict: 'id' });
-        if (error) throw new Error(`Backup special rates error: ${error.message}`);
-      }
+      await upsertWithReport('party_special_rates', cloudRates, 'store_id,party_id,item_id', () => 'special rate', report);
     }
   }
 
@@ -731,12 +727,8 @@ export async function backupLocalToCloud(
       return row;
     });
 
-    const chunks = chunkArray(cloudOrders, 100);
-    for (let i = 0; i < chunks.length; i++) {
-      onProgress(`Uploading order book ${i + 1}/${chunks.length}...`, 85 + Math.round(5 * i / chunks.length), 100);
-      const { error } = await supabase.from('order_book').upsert(chunks[i], { onConflict: 'id' });
-      if (error) throw new Error(`Backup order book error: ${error.message}`);
-    }
+    await upsertWithReport('order_book', cloudOrders, 'id', r => `order "${r.item_name}"`, report,
+      (i, n) => onProgress(`Uploading order book ${i + 1}/${n}...`, 85 + Math.round(5 * i / n), 100));
   }
 
   // ── 12. Upload App Settings ────────────────────────────────────────────────
@@ -753,15 +745,12 @@ export async function backupLocalToCloud(
       }));
 
     if (cloudSettings.length > 0) {
-      for (const chunk of chunkArray(cloudSettings, 100)) {
-        // onConflict uses composite key (store_id, key)
-        const { error } = await supabase.from('app_settings').upsert(chunk, { onConflict: 'store_id,key' });
-        if (error) throw new Error(`Backup settings error: ${error.message}`);
-      }
+      await upsertWithReport('app_settings', cloudSettings, 'store_id,key', r => `setting "${r.key}"`, report);
     }
   }
 
-  onProgress('Cloud Backup completed successfully!', 100, 100);
+  onProgress(report.failed.length ? `Backup finished with ${report.failed.length} problem(s)` : 'Cloud Backup completed successfully!', 100, 100);
+  return report;
 }
 
 /**
@@ -834,6 +823,25 @@ export async function restoreCloudToLocal(
 
   onProgress('Downloading cloud app settings...', 56, 100);
   const cloudSettings = await fetchAllRows('app_settings');
+
+  // 2a. Safety: never replace the laptop's data with a SMALLER cloud copy. A restore is
+  //     meant for a new/empty/broken laptop; if the laptop has more bills than the cloud,
+  //     restoring would delete the extra bills for good.
+  const localCounts = (await db.select<{ t: number; ti: number }[]>(
+    `SELECT (SELECT COUNT(*) FROM transactions) AS t, (SELECT COUNT(*) FROM transaction_items) AS ti`
+  ))[0] ?? { t: 0, ti: 0 };
+  if (Number(localCounts.t) > cloudTxns.length || Number(localCounts.ti) > cloudTxnItems.length) {
+    throw new Error(
+      `Restore stopped — nothing was changed. This computer has ${localCounts.t} bills (${localCounts.ti} lines) ` +
+      `but the cloud only has ${cloudTxns.length} bills (${cloudTxnItems.length} lines). ` +
+      `Restoring would delete the extra bills. Run "Backup to Cloud" first, then try again.`
+    );
+  }
+
+  // 2b. Full local backup file before anything is deleted. If it fails, stop.
+  onProgress('Backing up local database before restore...', 58, 100);
+  const backupFile = await backupDatabase(db, 'before-cloud-restore');
+  console.log('[Restore] Local backup written:', backupFile);
 
   // 2. Clear local SQLite tables in reverse dependency order
   onProgress('Preparing local database...', 60, 100);

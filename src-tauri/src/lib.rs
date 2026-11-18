@@ -242,18 +242,47 @@ fn start_scanner_server(app_handle: AppHandle) {
     });
 }
 
+/// Delete old backup files, keeping the newest `keep` for one kind.
+/// Only touches files named `mediflow-backup-<kind>-*.db` inside the app's backups folder.
+#[tauri::command]
+fn prune_backups(app_handle: AppHandle, kind: String, keep: usize) -> Result<Vec<String>, String> {
+    if kind.is_empty() || !kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("invalid backup kind".into());
+    }
+    let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?.join("backups");
+    let prefix = format!("mediflow-backup-{}-", kind);
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(&prefix) && n.ends_with(".db"))
+        .collect();
+    files.sort(); // names carry an ISO timestamp, so this is oldest -> newest
+    let mut removed = Vec::new();
+    if files.len() > keep {
+        for name in &files[..files.len() - keep] {
+            if std::fs::remove_file(dir.join(name)).is_ok() {
+                removed.push(name.clone());
+            }
+        }
+    }
+    Ok(removed)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_sql::Builder::default().build())
-    .invoke_handler(tauri::generate_handler![get_local_ip])
+    .invoke_handler(tauri::generate_handler![get_local_ip, prune_backups])
     .setup(|app| {
       let handle = app.handle().clone();
       start_scanner_server(handle);
 
       let app_dir = app.path().app_data_dir().expect("failed to get app data dir");
       std::fs::create_dir_all(&app_dir).ok();
+      std::fs::create_dir_all(app_dir.join("backups")).ok();
       let db_path = app_dir.join("mediflow.db");
       if !db_path.exists() {
         let resource_path = app.path().resource_dir().expect("failed to get resource dir").join("mediflow.db");

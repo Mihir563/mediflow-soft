@@ -1,6 +1,7 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { getDB } from '@/lib/db';
+import { toBaseQty } from '@/lib/utils';
 import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle, Edit3 } from 'lucide-react';
 import ItemModal from '@/components/ItemModal';
 import ScannerPanel, { GeminiBillData } from '@/components/ScannerPanel';
@@ -298,6 +299,9 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
 
   const searchVendors = async (q: string) => {
     setVendorSearch(q);
+    // Typing something different from the selected supplier must drop the selection,
+    // otherwise the old supplier stays attached to the bill.
+    setVendor(prev => (prev && prev.name !== q ? null : prev));
     if (!q.trim()) {
       setVendorResults([]);
       setShowVendorDrop(false);
@@ -416,6 +420,13 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
       return;
     }
 
+    // A supplier must be explicitly selected (never save with a blank/stale party)
+    if (!vendor?.id || vendor.name !== vendorSearch) {
+      setStatus('❌ Select a supplier from the list before saving');
+      document.getElementById('vendorSearch')?.focus();
+      return;
+    }
+
     // Validate bill number
     if (!billNo.trim()) {
       setStatus('❌ Bill number cannot be empty');
@@ -454,12 +465,13 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
       const currentEditId = editTxnDbId;
 
       const existing = await db.select<any[]>(
-        `SELECT id FROM transactions WHERE invoice_no = $1 AND type = 'purchase' AND date >= $2 AND date <= $3${currentEditId ? ` AND id != ${currentEditId}` : ''}`,
-        [billNo.trim(), fyStart, fyEnd]
+        // Different suppliers may use the same bill number, so only the same supplier is a duplicate.
+        `SELECT id FROM transactions WHERE TRIM(invoice_no) = $1 AND type = 'purchase' AND party_id = $4 AND date >= $2 AND date <= $3${currentEditId ? ` AND id != ${currentEditId}` : ''}`,
+        [billNo.trim(), fyStart, fyEnd, vendor!.id]
       );
       if (existing.length > 0) {
         const fyLabel = `${new Date(fyStart).getFullYear()}-${String(new Date(fyEnd).getFullYear()).slice(2)}`;
-        setStatus(`❌ A purchase bill "${billNo.trim()}" already exists in FY ${fyLabel}! Use a different bill number.`);
+        setStatus(`❌ Bill "${billNo.trim()}" from ${vendor!.name} already exists in FY ${fyLabel}! Use a different bill number.`);
         return;
       }
 
@@ -467,15 +479,17 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
       if (isEditMode && editTxnDbId) {
         // === EDIT MODE: Update existing transaction ===
         // First, reverse the stock changes from the old items
+        // Saved quantity is in the bill's unit (BOX/STRIP/TAB) but stock is kept in TABs,
+        // so convert back the same way it was added — otherwise every edit drifts the stock.
         const oldItems = await db.select<any[]>(
-          `SELECT * FROM transaction_items WHERE txn_id = $1`,
+          `SELECT ti.*, i.tabs_per_strip, i.strips_per_box FROM transaction_items ti LEFT JOIN items i ON i.id = ti.item_id WHERE ti.txn_id = $1`,
           [editTxnDbId]
         );
         for (const oldItem of oldItems) {
           if (oldItem.item_id) {
             await db.execute(
               `UPDATE items SET current_stock = current_stock - $1 WHERE id = $2`,
-              [oldItem.quantity, oldItem.item_id]
+              [toBaseQty(oldItem), oldItem.item_id]
             );
           }
         }
@@ -1264,7 +1278,7 @@ export default function PurchaseBill({ editTxnId, onSaved, tabId, onLabelChange 
               // Try to find matching vendor in DB
               getDB().then(db => {
                 db.select<any[]>(`SELECT * FROM parties WHERE name LIKE $1 LIMIT 1`, [`%${data.vendor}%`])
-                  .then(res => { if (res.length > 0) setVendor(res[0]); });
+                  .then(res => { if (res.length > 0) { setVendor(res[0]); setVendorSearch(res[0].name); } });
               });
             }
           }}

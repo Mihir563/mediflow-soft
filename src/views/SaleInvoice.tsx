@@ -1,6 +1,7 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getDB } from '@/lib/db';
+import { toBaseQty } from '@/lib/utils';
 import { Search, Plus, Trash2, ChevronDown, ScanLine, HelpCircle, Edit3 } from 'lucide-react';
 import ItemModal from '@/components/ItemModal';
 import ScannerPanel, { GeminiBillData } from '@/components/ScannerPanel';
@@ -277,6 +278,8 @@ export default function SaleInvoice({ editTxnId, onSaved, tabId, onLabelChange }
 
   const searchParties = async (q: string) => {
     setPartySearch(q);
+    // Typing a different name must drop the previously selected customer.
+    setParty(prev => (prev && prev.name !== q ? null : prev));
     if (!q.trim()) {
       setPartyResults([]);
       setShowPartyDrop(false);
@@ -486,10 +489,11 @@ export default function SaleInvoice({ editTxnId, onSaved, tabId, onLabelChange }
       if (isEditMode && editTxnDbId) {
         // === EDIT MODE ===
         // Reverse old stock
-        const oldItems = await db.select<any[]>(`SELECT * FROM transaction_items WHERE txn_id = $1`, [editTxnDbId]);
+        // Convert saved BOX/STRIP quantity back to TABs, same as when it was deducted.
+        const oldItems = await db.select<any[]>(`SELECT ti.*, i.tabs_per_strip, i.strips_per_box FROM transaction_items ti LEFT JOIN items i ON i.id = ti.item_id WHERE ti.txn_id = $1`, [editTxnDbId]);
         for (const oldItem of oldItems) {
           if (oldItem.item_id) {
-            await db.execute(`UPDATE items SET current_stock = current_stock + $1 WHERE id = $2`, [oldItem.quantity, oldItem.item_id]);
+            await db.execute(`UPDATE items SET current_stock = current_stock + $1 WHERE id = $2`, [toBaseQty(oldItem), oldItem.item_id]);
           }
         }
         await db.execute(`DELETE FROM transaction_items WHERE txn_id = $1`, [editTxnDbId]);

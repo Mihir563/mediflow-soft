@@ -17,6 +17,7 @@ import StoreSelector from '@/components/StoreSelector';
 import AdminDashboard from '@/components/AdminDashboard';
 import BillTabBar, { BillTab } from '@/components/BillTabBar';
 import { useAuth } from '@/lib/AuthContext';
+import { flushPendingSyncs } from '@/lib/supabaseSyncHelper';
 import { MediFlowLogo } from '@/components/MediFlowLogo';
 import {
   LayoutDashboard, Zap, FileText, ShoppingCart,
@@ -55,6 +56,13 @@ export default function Home() {
   useEffect(() => {
     if (!authLoading) setAuthReady(true);
   }, [authLoading]);
+
+  // On start (once a store is open), push any bills still waiting for cloud sync —
+  // including bills corrected by a startup data fix.
+  useEffect(() => {
+    if (!activeStore?.id) return;
+    flushPendingSyncs(activeStore.id).catch(e => console.warn('[CloudSync] flush failed:', e));
+  }, [activeStore?.id]);
 
   // ── Billing app state ────────────────────────────────────────────────────────
   const [page, setPage] = useState<Page>('dashboard');

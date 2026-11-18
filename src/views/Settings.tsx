@@ -919,12 +919,18 @@ export default function Settings() {
     setSyncPct(0);
 
     try {
-      await backupLocalToCloud(activeStore.id, (phase, current, total) => {
+      const report = await backupLocalToCloud(activeStore.id, (phase, current, total) => {
         setSyncMsg(phase);
         const pct = total > 0 ? Math.round((current / total) * 100) : 0;
         setSyncPct(pct);
       });
-      alert('✅ Cloud Backup completed successfully! All your local data is safely backed up to the cloud.');
+      if (report.failed.length === 0) {
+        alert(`✅ Cloud Backup completed! ${report.uploaded.transactions ?? 0} bills uploaded. Nothing in the cloud was deleted.`);
+      } else {
+        console.warn('[Backup] Problems:', report.failed);
+        const list = report.failed.slice(0, 15).map(f => `• ${f.label}: ${f.error}`).join('\n');
+        alert(`⚠️ Cloud Backup finished, but ${report.failed.length} record(s) could not be uploaded:\n\n${list}${report.failed.length > 15 ? `\n…and ${report.failed.length - 15} more (see console)` : ''}\n\nEverything else was uploaded. Your local data is unchanged.`);
+      }
       handleRefreshStats();
     } catch (e: any) {
       console.error(e);
@@ -965,7 +971,7 @@ export default function Settings() {
       return;
     }
 
-    if (!window.confirm('🚨 CRITICAL WARNING: This will permanently DELETE all your local SQLite database data (including invoices, customers, and inventory) and replace it with the data on the Supabase Cloud.\n\nAre you absolutely sure you want to proceed?')) {
+    if (!window.confirm('🚨 WARNING: This replaces ALL data on this computer (bills, parties, items) with the cloud copy.\n\nA full backup file of this computer\'s database is saved first, and the restore is refused if the cloud has fewer bills than this computer.\n\nProceed?')) {
       return;
     }
 
