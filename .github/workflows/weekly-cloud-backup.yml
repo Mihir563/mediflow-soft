@@ -1,0 +1,117 @@
+# Weekly encrypted backup of the Supabase (cloud) database to Google Drive.
+#
+# Needs 3 repository secrets (Settings -> Secrets and variables -> Actions):
+#   SUPABASE_DB_URL    Supabase -> Connect -> "Session pooler" connection string (with password)
+#   BACKUP_PASSPHRASE  long random password; without it a backup can NEVER be opened — keep a copy offline
+#   RCLONE_CONFIG      output of `rclone config show` for the Google Drive remote named "gdrive"
+# Setup and restore steps: docs/weekly-backup.md
+name: Weekly cloud backup
+
+on:
+  schedule:
+    - cron: "30 15 * * 0" # every Sunday 15:30 UTC = 21:00 India time
+  workflow_dispatch: {}    # "Run workflow" button for a manual backup / test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-cloud-backup
+  cancel-in-progress: false
+
+env:
+  DRIVE_FOLDER: MediFlow-Backups
+  KEEP_LAST: "8"
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check secrets are set
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+          RCLONE_CONFIG_TEXT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          missing=0
+          for v in SUPABASE_DB_URL BACKUP_PASSPHRASE RCLONE_CONFIG_TEXT; do
+            if [ -z "${!v}" ]; then echo "::error::Secret for $v is not set"; missing=1; fi
+          done
+          if [ "${#BACKUP_PASSPHRASE}" -lt 16 ]; then echo "::error::BACKUP_PASSPHRASE must be at least 16 characters"; missing=1; fi
+          exit $missing
+
+      - name: Install PostgreSQL 17 client and rclone
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-17 rclone
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          rclone version | head -1
+
+      - name: Dump database
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          STAMP=$(date -u +%Y-%m-%dT%H-%MZ)
+          echo "FILE=mediflow-cloud-${STAMP}.dump" >> "$GITHUB_ENV"
+          # public schema = all store data (stores, parties, items, bills, lines, rates, orders, settings)
+          /usr/lib/postgresql/17/bin/pg_dump "$SUPABASE_DB_URL" \
+            --format=custom --schema=public --no-owner --no-privileges \
+            --file="mediflow-cloud-${STAMP}.dump"
+
+      - name: Verify dump is complete and readable
+        run: |
+          set -euo pipefail
+          SIZE=$(stat -c%s "$FILE")
+          echo "Dump size: $SIZE bytes"
+          if [ "$SIZE" -lt 100000 ]; then echo "::error::Dump is suspiciously small ($SIZE bytes) - not uploading"; exit 1; fi
+          /usr/lib/postgresql/17/bin/pg_restore --list "$FILE" > toc.txt
+          for t in transactions transaction_items parties items stores; do
+            grep -q "TABLE DATA public $t " toc.txt || { echo "::error::table $t missing from dump"; exit 1; }
+          done
+          echo "All key tables present."
+
+      - name: Encrypt
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+              --symmetric --cipher-algo AES256 --output "$FILE.gpg" "$FILE" <<< "$BACKUP_PASSPHRASE"
+          # prove it decrypts before we rely on it
+          gpg --batch --pinentry-mode loopback --passphrase-fd 0 --decrypt "$FILE.gpg" <<< "$BACKUP_PASSPHRASE" | cmp - "$FILE"
+          shred -u "$FILE"
+          echo "Encrypted: $(stat -c%s "$FILE.gpg") bytes"
+
+      - name: Upload to Google Drive
+        env:
+          RCLONE_CONFIG_TEXT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONFIG_TEXT" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+          rclone copy "$FILE.gpg" "gdrive:$DRIVE_FOLDER" --retries 5
+          rclone lsf "gdrive:$DRIVE_FOLDER" | grep -qx "$FILE.gpg" || { echo "::error::upload not found on Drive"; exit 1; }
+          echo "Uploaded $FILE.gpg to Drive folder $DRIVE_FOLDER"
+
+      - name: Keep only the newest backups
+        run: |
+          set -euo pipefail
+          # names carry a UTC timestamp, so sorting by name = oldest first
+          mapfile -t files < <(rclone lsf "gdrive:$DRIVE_FOLDER" --files-only --include "mediflow-cloud-*.dump.gpg" | sort)
+          count=${#files[@]}
+          echo "Backups on Drive: $count (keeping newest $KEEP_LAST)"
+          if [ "$count" -gt "$KEEP_LAST" ]; then
+            for f in "${files[@]:0:$((count - KEEP_LAST))}"; do
+              echo "Removing old backup $f"
+              rclone deletefile "gdrive:$DRIVE_FOLDER/$f"
+            done
+          fi
+
+      - name: Clean up runner
+        if: always()
+        run: rm -f ~/.config/rclone/rclone.conf ./*.dump ./*.dump.gpg toc.txt
