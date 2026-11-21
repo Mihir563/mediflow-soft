@@ -95,7 +95,9 @@ export async function backupDatabase(db: Database, label: string): Promise<strin
       throw new Error(`backup check failed (live ${JSON.stringify(a)} vs copy ${JSON.stringify(b)})`);
     }
   } finally {
-    await copy.close().catch(() => {});
+    // MUST name the database: close() with no argument closes EVERY connection,
+    // including the app's main mediflow.db, which made the whole app look empty (v1.0.8 bug).
+    await copy.close(`sqlite:${file}`).catch(() => {});
   }
   return file;
 }
